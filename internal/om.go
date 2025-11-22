@@ -7,6 +7,21 @@ import (
 	"os"
 )
 
+type CollectionFileTrackingRecord struct {
+	DB             string
+	Collection     string
+	RemoteFile     string
+	Status         string
+	Message        string
+	StartTokenB64  string
+	ResumeTokenB64 string
+}
+
+type CollectionFileTracker interface {
+	UpdateFileStatus(record CollectionFileTrackingRecord) error
+	GetLastUpload() (record *CollectionFileTrackingRecord, found bool)
+}
+
 type ChangeEvent struct {
 	OperationType string `bson:"operationType"`
 	FullDocument  bson.M `bson:"fullDocument"`
@@ -25,6 +40,7 @@ type ChangeEventCombo struct {
 }
 
 type UploadFileName struct {
+	DB             string `bson:"db"`
 	Collection     string `json:"collection"`
 	SourceFileName string `json:"source_file_name"`
 	Nanos          int64  `json:"nanos"`

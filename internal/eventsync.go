@@ -234,6 +234,7 @@ func RollFile(rollingFile *RollingFile, conf Config, collection MongoCollection,
 	}
 
 	uploadfileName := UploadFileName{
+		DB:             collection.DB,
 		Collection:     collection.Name,
 		SourceFileName: rollingFile.FileName,
 		Nanos:          time.Now().UnixNano(),

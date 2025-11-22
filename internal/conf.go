@@ -1,6 +1,8 @@
 package internal
 
-import "time"
+import (
+	"time"
+)
 
 type Config struct {
 	MONGO_URL              string            `yaml:"mongo_url"`
