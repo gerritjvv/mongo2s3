@@ -72,7 +72,7 @@ func SyncEvents(context context.Context,
 		if err != nil {
 			errorCh <- TraceErr(err)
 		}
-		fmt.Printf("Event Op Type: %s\n", event.OperationType)
+		//fmt.Printf("Event Op Type: %s\n", event.OperationType)
 		if event.OperationType == "update" || event.OperationType == "insert" {
 			// send to writer the event and the resume token
 			writerCh <- &ChangeEventCombo{Event: &event, ResumeToken: cs.ResumeToken()}

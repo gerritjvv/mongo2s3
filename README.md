@@ -2,9 +2,9 @@
 # TODO
 
 * Uploader
-* We need a way to track the files uploaded and the sync tokens. This way we can know what's uploaded to s3.
+* We need a way to track the files uploaded and the sync tokens. This way we can know what's uploaded to s3. <-- done
 * We need to cleanout the tracking files.
-  * Add DB connection
+  * Add DB connection <-- done
 * If no resume token we should:
  start a change stream 
 then start a full scan (if configured to do so)
