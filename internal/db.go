@@ -2,9 +2,14 @@ package internal
 
 import (
 	"context"
+	"embed"
 	"errors"
+	"fmt"
 	"github.com/jackc/pgx/v5"
 )
+
+//go:embed migrations/*.sql
+var migrationFiles embed.FS
 
 type DB struct {
 	Connection *pgx.Conn
@@ -16,6 +21,28 @@ func NewDBConnect(conf Config) (*DB, error) {
 		return nil, TraceErr(err)
 	}
 	return &DB{Connection: conn}, nil
+}
+
+func RunMigrations(db *DB, ctx context.Context) error {
+	entries, err := migrationFiles.ReadDir("migrations")
+	if err != nil {
+		return err
+	}
+
+	for _, e := range entries {
+		contents, err := migrationFiles.ReadFile("migrations/" + e.Name())
+		if err != nil {
+			return err
+		}
+
+		fmt.Printf("found migration file: %s\n", e.Name())
+		_, execErr := db.Connection.Exec(ctx, string(contents))
+		if execErr != nil {
+			return fmt.Errorf("migration %s failed: %w", e.Name(), execErr)
+		}
+		fmt.Println("applied migration:", e.Name())
+	}
+	return nil
 }
 
 type DBCollectionFileTracker struct {
@@ -40,7 +67,7 @@ INSERT INTO sync_file_tracking (
 ON CONFLICT (db, collection, remote_file)
 DO UPDATE SET
     status = EXCLUDED.status,
-    message = EXCLUDED.message,
+    message = EXCLUDED.message
 `,
 		record.DB,
 		record.Collection,
@@ -51,6 +78,7 @@ DO UPDATE SET
 		record.ResumeTokenB64,
 	)
 	if err != nil {
+		fmt.Printf("error updating file status: %s\n", err)
 		return TraceErr(err)
 	}
 	return nil

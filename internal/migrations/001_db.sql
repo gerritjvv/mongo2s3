@@ -7,8 +7,8 @@ CREATE TABLE IF NOT EXISTS sync_file_tracking (
     message text,
     start_token_b64 text,
     resume_token_b64 text,
-    created_at timestamp with time zone DEFAULT now() AT TIME ZONE 'UTC',
-)
+    created_at timestamp with time zone DEFAULT now()
+);
 
 CREATE UNIQUE INDEX IF NOT EXISTS sync_file_tracking_unique_idx
     ON sync_file_tracking (db, collection, remote_file);
