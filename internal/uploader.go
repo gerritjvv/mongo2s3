@@ -8,6 +8,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"io"
 	"os"
+	"path/filepath"
+	"time"
 )
 
 type UploadProvider interface {
@@ -40,7 +42,9 @@ func NewS3Provider(ctx context.Context, bucket string) (UploadProvider, error) {
 	}, nil
 }
 
-func uploadToS3(context context.Context, config Config,
+// ProcessUploadingFilesFromChannel listens for messages on uploadch and upload files to the UploadProvider
+// once a file is uploaded its satus is persisted to the DB and the local file removed.
+func ProcessUploadingFilesFromChannel(context context.Context,
 	provider UploadProvider,
 	tracker CollectionFileTracker,
 	uploadch <-chan string) error {
@@ -57,7 +61,7 @@ func uploadToS3(context context.Context, config Config,
 				continue
 			}
 			// check if file exists
-			err := processFileToUpload(context, config, provider, tracker, localFile)
+			err := processFileToUpload(context, provider, tracker, localFile)
 			if err != nil {
 				fmt.Println(err)
 			}
@@ -65,29 +69,33 @@ func uploadToS3(context context.Context, config Config,
 	}
 }
 
-func processFileToUpload(ctx context.Context, config Config, provider UploadProvider, tracker CollectionFileTracker, file string) error {
-
-	metaFileData, err := ParseUploadFileName(file)
+func processFileToUpload(ctx context.Context, provider UploadProvider, tracker CollectionFileTracker, metaDataFileName string) error {
+	metaFileData, err := ParseUploadFileName(metaDataFileName)
 	if err != nil {
 		return err
 	}
+	t := time.Unix(0, metaFileData.Nanos)
+	remoteFile := fmt.Sprintf("%s/%s/%s/%s",
+		metaFileData.DB,
+		metaFileData.Collection,
+		t.Format("year=2006/month=01/day=02/hour=15"),
+		filepath.Base(metaFileData.SourceFileName),
+	)
 
-	remoteFile := TODO Make remote file name here
 	trackingRecord := CollectionFileTrackingRecord{
 		DB:             metaFileData.DB,
 		Collection:     metaFileData.Collection,
 		RemoteFile:     remoteFile,
-		Status:         "success",
+		Status:         "pending",
 		Message:        "",
 		StartTokenB64:  metaFileData.StartTokenB64,
 		ResumeTokenB64: metaFileData.ResumeTokenB64,
 	}
 
-	f, err := os.Open(metaFileData.SourceFileName)
-
-	if err != nil {
+	f, uploadErr := os.Open(metaFileData.SourceFileName)
+	if uploadErr != nil {
 		trackingRecord.Status = "error"
-		trackingRecord.Message = err.Error()
+		trackingRecord.Message = uploadErr.Error()
 	} else {
 		defer func() {
 			errClose := f.Close()
@@ -96,16 +104,30 @@ func processFileToUpload(ctx context.Context, config Config, provider UploadProv
 			}
 		}()
 
-		err = provider.UploadFile(ctx, f, remoteFile)
-		if err != nil {
+		uploadErr = provider.UploadFile(ctx, f, remoteFile)
+		if uploadErr != nil {
 			trackingRecord.Status = "error"
-			trackingRecord.Message = err.Error()
+			trackingRecord.Message = uploadErr.Error()
 		}
 
+	}
+
+	if uploadErr == nil {
+		trackingRecord.Status = "success"
 	}
 	err = tracker.UpdateFileStatus(trackingRecord)
 	if err != nil {
 		return TraceErr(err)
+	}
+	if uploadErr == nil {
+		err = os.Remove(metaFileData.SourceFileName)
+		if err != nil {
+			fmt.Println("error removing file", metaFileData.SourceFileName, err)
+		}
+		err = os.Remove(metaDataFileName)
+		if err != nil {
+			fmt.Println("error removing file", metaDataFileName, err)
+		}
 	}
 	return nil
 }

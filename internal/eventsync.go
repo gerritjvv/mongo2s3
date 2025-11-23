@@ -11,6 +11,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -271,7 +272,7 @@ func moveFile(conf Config, collection MongoCollection, fileName string) (string,
 	// we roll the file
 	// give it a name collection__nanos__resumetoken_b64.gzip
 	newFileName := makeFileName(collection.Name)
-	newFilePath := fmt.Sprintf("%s/%s", conf.LocalBaseDir, newFileName)
+	newFilePath := filepath.Join(filepath.Clean(conf.LocalBaseDir), newFileName)
 	err := os.Rename(fileName, newFilePath)
 	if err != nil {
 		return "", err
@@ -327,7 +328,7 @@ func (r *RollingFile) Close() error {
 }
 
 func NewRollingFile(conf Config, collection MongoCollection) (*RollingFile, error) {
-	file, err := os.Create(fmt.Sprintf("%s/%s.tmp", conf.LocalBaseDir, collection.Name))
+	file, err := os.Create(fmt.Sprintf("%s.tmp", filepath.Join(conf.LocalBaseDir, collection.Name)))
 	if err != nil {
 		return nil, err
 	}
