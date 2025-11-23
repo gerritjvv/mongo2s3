@@ -115,7 +115,7 @@ func processFileToUpload(ctx context.Context, provider UploadProvider, tracker C
 	if uploadErr == nil {
 		trackingRecord.Status = "success"
 	}
-	err = tracker.UpdateFileStatus(trackingRecord)
+	err = tracker.UpdateFileStatus(ctx, trackingRecord)
 	if err != nil {
 		return TraceErr(err)
 	}

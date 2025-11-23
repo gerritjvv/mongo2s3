@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -18,8 +19,8 @@ type CollectionFileTrackingRecord struct {
 }
 
 type CollectionFileTracker interface {
-	UpdateFileStatus(record CollectionFileTrackingRecord) error
-	GetLastUpload() (record *CollectionFileTrackingRecord, found bool)
+	UpdateFileStatus(context context.Context, record CollectionFileTrackingRecord) error
+	GetLastUpload(context context.Context, db string, collection string) (record *CollectionFileTrackingRecord, found bool, err error)
 }
 
 type ChangeEvent struct {
