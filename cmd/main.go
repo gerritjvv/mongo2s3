@@ -1,4 +1,4 @@
-package cmd
+package main
 
 import (
 	"context"
@@ -12,6 +12,7 @@ import (
 	"mongo2s3/internal"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 )
@@ -70,6 +71,16 @@ func main() {
 		return
 	}
 
+	// let's make sure we can write to s3 before we start syncing
+	fmt.Printf("Test provider is valid\n")
+	reader := strings.NewReader("testfile")
+	uploadError := uploadProvider.UploadFile(ctx, reader, fmt.Sprintf("%s/%s", config.S3Bucket, ".test.txt"))
+	if uploadError != nil {
+		fmt.Println(uploadError)
+		os.Exit(5)
+		return
+	}
+	fmt.Printf("Provider is valid\n")
 	db, err := internal.NewDBConnect(config)
 	if err != nil {
 		fmt.Println(err)
@@ -117,7 +128,7 @@ func main() {
 			}
 		}
 		wg.Go(func() {
-			fmt.Printf("Starting sync for %s %s from %s\n", coll.DB, coll.Name, base64.URLEncoding.EncodeToString(resumeToken))
+			fmt.Printf("Starting sync for %s %s from token: %s\n", coll.DB, coll.Name, base64.URLEncoding.EncodeToString(resumeToken))
 			if syncErr := internal.SyncEvents(ctx, config, mongoClient, resumeToken, coll, uploaderCh, specificErrorCh); syncErr != nil {
 				specificErrorCh <- syncErr
 			}
@@ -125,10 +136,12 @@ func main() {
 		})
 
 		wg.Go(func() {
-			uploadError := internal.ProcessUploadingFilesFromChannel(ctx, uploadProvider, tracker, uploaderCh)
+			fmt.Printf("Starting upload for %s %s\n", coll.DB, coll.Name)
+			uploadError := internal.ProcessUploadingFilesFromChannel(ctx, uploadProvider, tracker, uploaderCh, specificErrorCh)
 			if uploadError != nil {
 				specificErrorCh <- uploadError
 			}
+			fmt.Printf("Sopped sync for %s %s\n", coll.DB, coll.Name)
 		})
 
 		errWg.Go(func() {
@@ -144,7 +157,7 @@ func main() {
 		})
 	}
 
-	fmt.Printf("Started for collections\n")
+	fmt.Printf("Started syncing all collections\n")
 
 	var finalErrWg sync.WaitGroup
 

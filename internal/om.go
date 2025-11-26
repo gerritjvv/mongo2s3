@@ -50,7 +50,7 @@ type UploadFileName struct {
 }
 
 func (u *UploadFileName) FileName() string {
-	return fmt.Sprintf("%s__%d__%s.gzip", u.Collection, u.Nanos, u.ResumeTokenB64)
+	return fmt.Sprintf("%s_%d.gzip", u.Collection, u.Nanos)
 }
 
 func ParseUploadFileName(metaDataFile string) (*UploadFileName, error) {

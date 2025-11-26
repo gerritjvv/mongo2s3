@@ -1,0 +1,14 @@
+db_url: "postgres://myuser:mypass@postgres:5432/mydb?sslmode=disable"
+mongo_url: "mongodb://mongodb:27017"
+local_base_dir: "/tmp/"
+
+s3_bucket: "test"
+s3_region: "us-east-1"
+s3_prefix: "/data"
+
+file_write_timeout_second: "10s"
+file_write_size_bytes: 1048576
+
+collections:
+  - db: "test"
+    name: "test"

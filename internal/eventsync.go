@@ -145,6 +145,9 @@ func writeEvents(
 				}
 				return nil
 			}
+			if !bytesWritten {
+				fmt.Printf("1.get first event %v %s %s\n", eventCombo, collection.DB, collection.Name)
+			}
 
 			event := eventCombo.Event
 			resumeToken = eventCombo.ResumeToken
@@ -237,7 +240,7 @@ func RollFile(rollingFile *RollingFile, conf Config, collection MongoCollection,
 	uploadfileName := UploadFileName{
 		DB:             collection.DB,
 		Collection:     collection.Name,
-		SourceFileName: rollingFile.FileName,
+		SourceFileName: movedFile,
 		Nanos:          time.Now().UnixNano(),
 		ResumeTokenB64: base64.URLEncoding.EncodeToString(resumeToken),
 		StartTokenB64:  base64.StdEncoding.EncodeToString(rollingFile.StartToken),
@@ -282,7 +285,7 @@ func moveFile(conf Config, collection MongoCollection, fileName string) (string,
 
 // makeFileName return the filename string collection__nanos__resumetoken_b64.gzip
 func makeFileName(collectionName string) string {
-	return fmt.Sprintf("%s__%d.gz", collectionName, time.Now().UnixNano())
+	return fmt.Sprintf("%s_%d.gz", collectionName, time.Now().UnixNano())
 }
 
 type RollingFile struct {
@@ -328,7 +331,7 @@ func (r *RollingFile) Close() error {
 }
 
 func NewRollingFile(conf Config, collection MongoCollection) (*RollingFile, error) {
-	file, err := os.Create(fmt.Sprintf("%s.tmp", filepath.Join(conf.LocalBaseDir, collection.Name)))
+	file, err := os.Create(fmt.Sprintf("%s.%d.tmp", filepath.Join(conf.LocalBaseDir, collection.Name), time.Now().UnixNano()))
 	if err != nil {
 		return nil, err
 	}

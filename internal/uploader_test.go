@@ -100,6 +100,7 @@ func TestFileUploadToS3(t *testing.T) {
 			provider,
 			tracker,
 			uploadch,
+			errorch,
 		)
 		if err1 != nil {
 			errorch <- err1

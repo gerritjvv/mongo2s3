@@ -1,0 +1,78 @@
+services:
+  mongodb:
+    image: mongo
+    command: [ "--replSet", "rs0", "--bind_ip_all" ]
+    ports:
+      - "27017:27017"
+
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: myuser
+      POSTGRES_PASSWORD: mypass
+      POSTGRES_DB: mydb
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  seaweed-master:
+    image: chrislusf/seaweedfs
+    command: "master"
+    ports:
+      - "9333:9333"
+    volumes:
+      - ./weed-data/master:/data
+
+  seaweed-volume:
+    image: chrislusf/seaweedfs
+    command: "volume -mserver=seaweed-master:9333"
+    environment:
+      - WEED_VOLUME_MAX=5
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./weed-data/volume:/data
+    depends_on:
+      - seaweed-master
+
+  seaweed-s3:
+    image: chrislusf/seaweedfs
+    command: "s3 -port=8333 -ip.bind=0.0.0.0  -config=/config/s3.json -filer=seaweed-filer:8888"
+    ports:
+      - "8333:8333"
+    volumes:
+      - ./resources/s3-config:/config
+    depends_on:
+      - seaweed-filer
+
+  seaweed-filer:
+    image: chrislusf/seaweedfs
+    command: "filer -master=seaweed-master:9333"
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./weed-data/filer:/data
+    depends_on:
+      - seaweed-master
+
+  mongo2s3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      - mongodb
+      - seaweed-s3
+    environment:
+      S3_ENDPOINT: "http://seaweed-s3:8333"
+      S3_ACCESS_KEY: "local-access-key"
+      S3_SECRET_KEY: "local-secret-key"
+      S3_REGION: "us-east-1"
+      AWS_EC2_METADATA_DISABLED: "true"
+      MONGO_URL: "mongodb://mongodb:27017"
+    volumes:
+      - ./testconfig.yaml:/app/config.yaml   # if needed
+    command: [ "--config", "config.yaml" ]
+
+volumes:
+  pgdata:

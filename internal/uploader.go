@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"io"
 	"os"
@@ -31,6 +32,39 @@ func (p *S3Provider) UploadFile(context context.Context, reader io.Reader, remot
 }
 
 func NewS3Provider(ctx context.Context, bucket string) (UploadProvider, error) {
+	endpoint := os.Getenv("S3_ENDPOINT")
+	accessKey := os.Getenv("S3_ACCESS_KEY")
+	secretKey := os.Getenv("S3_SECRET_KEY")
+	region := os.Getenv("S3_REGION")
+	if region == "" {
+		region = "us-east-1"
+	}
+
+	// If an endpoint is provided, use it (SeaweedFS, MinIO, Localstack, etc.)
+	if endpoint != "" {
+		cfg, err := config.LoadDefaultConfig(ctx,
+			config.WithRegion(region),
+			config.WithCredentialsProvider(
+				credentials.NewStaticCredentialsProvider(accessKey, secretKey, ""),
+			),
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+			o.BaseEndpoint = aws.String(endpoint)
+
+			// Required by SeaweedFS / MinIO
+			o.UsePathStyle = true
+		})
+
+		return &S3Provider{
+			S3Client: client,
+			Bucket:   bucket,
+		}, nil
+	}
+
 	cfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
 		return nil, err
@@ -47,7 +81,8 @@ func NewS3Provider(ctx context.Context, bucket string) (UploadProvider, error) {
 func ProcessUploadingFilesFromChannel(context context.Context,
 	provider UploadProvider,
 	tracker CollectionFileTracker,
-	uploadch <-chan string) error {
+	uploadch <-chan string,
+	errorch chan<- error) error {
 
 	for {
 		select {
@@ -55,23 +90,27 @@ func ProcessUploadingFilesFromChannel(context context.Context,
 			return context.Err()
 		case localFile, ok := <-uploadch:
 			if !ok {
+				fmt.Printf("Uploading channel closed\n")
 				return nil
 			}
 			if localFile == "" {
+				fmt.Printf("Uploading local file is empty\n")
 				continue
 			}
 			// check if file exists
-			err := processFileToUpload(context, provider, tracker, localFile)
+			fmt.Printf("Processing upload for metadata file %s\n", localFile)
+			err := processFileToUpload(context, provider, tracker, localFile, errorch)
 			if err != nil {
-				fmt.Println(err)
+				errorch <- err
 			}
 		}
 	}
 }
 
-func processFileToUpload(ctx context.Context, provider UploadProvider, tracker CollectionFileTracker, metaDataFileName string) error {
+func processFileToUpload(ctx context.Context, provider UploadProvider, tracker CollectionFileTracker, metaDataFileName string, errorCh chan<- error) error {
 	metaFileData, err := ParseUploadFileName(metaDataFileName)
 	if err != nil {
+		fmt.Printf("Cannot read metadata file for upload %s\n", metaDataFileName)
 		return err
 	}
 	t := time.Unix(0, metaFileData.Nanos)
@@ -96,6 +135,7 @@ func processFileToUpload(ctx context.Context, provider UploadProvider, tracker C
 	if uploadErr != nil {
 		trackingRecord.Status = "error"
 		trackingRecord.Message = uploadErr.Error()
+		errorCh <- uploadErr
 	} else {
 		defer func() {
 			errClose := f.Close()
@@ -103,11 +143,11 @@ func processFileToUpload(ctx context.Context, provider UploadProvider, tracker C
 				fmt.Println(TraceErr(errClose))
 			}
 		}()
-
 		uploadErr = provider.UploadFile(ctx, f, remoteFile)
 		if uploadErr != nil {
 			trackingRecord.Status = "error"
 			trackingRecord.Message = uploadErr.Error()
+			errorCh <- TraceErr(uploadErr)
 		}
 
 	}
@@ -122,11 +162,11 @@ func processFileToUpload(ctx context.Context, provider UploadProvider, tracker C
 	if uploadErr == nil {
 		err = os.Remove(metaFileData.SourceFileName)
 		if err != nil {
-			fmt.Println("error removing file", metaFileData.SourceFileName, err)
+			errorCh <- TraceErr(err)
 		}
 		err = os.Remove(metaDataFileName)
 		if err != nil {
-			fmt.Println("error removing file", metaDataFileName, err)
+			errorCh <- TraceErr(err)
 		}
 	}
 	return nil
