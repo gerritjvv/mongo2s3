@@ -5,7 +5,7 @@ import (
 )
 
 type Config struct {
-	DB_URL                 string            `yaml:db_url`
+	DB_URL                 string            `yaml:"db_url"`
 	MONGO_URL              string            `yaml:"mongo_url"`
 	LocalBaseDir           string            `yaml:"local_base_dir"`
 	S3Bucket               string            `yaml:"s3_bucket"`
