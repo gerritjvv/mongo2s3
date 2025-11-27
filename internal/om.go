@@ -14,6 +14,8 @@ type CollectionFileTrackingRecord struct {
 	RemoteFile     string
 	Status         string
 	Message        string
+	StartMongoId   string
+	EndMongoId     string
 	StartTokenB64  string
 	ResumeTokenB64 string
 }
@@ -44,6 +46,8 @@ type UploadFileName struct {
 	DB             string `bson:"db"`
 	Collection     string `json:"collection"`
 	SourceFileName string `json:"source_file_name"`
+	StartMongoId   string `bson:"start_mongo_id"`
+	EndMongoId     string `bson:"end_mongo_id"`
 	Nanos          int64  `json:"nanos"`
 	ResumeTokenB64 string `json:"resume_token"`
 	StartTokenB64  string `json:"start_token"`

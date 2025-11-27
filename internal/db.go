@@ -30,9 +30,9 @@ func RunMigrations(db *DB, ctx context.Context) error {
 	}
 
 	for _, e := range entries {
-		contents, err := migrationFiles.ReadFile("migrations/" + e.Name())
-		if err != nil {
-			return err
+		contents, err1 := migrationFiles.ReadFile("migrations/" + e.Name())
+		if err1 != nil {
+			return err1
 		}
 
 		Log.Info("found migration file", "file", e.Name())
@@ -58,11 +58,13 @@ INSERT INTO sync_file_tracking (
     remote_file,
     status,
     message,
+    start_mongo_id,
+    end_mongo_id,                                
     start_token_b64,
     resume_token_b64,
     created_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, now()
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, now()
 )
 ON CONFLICT (db, collection, remote_file)
 DO UPDATE SET
@@ -74,6 +76,8 @@ DO UPDATE SET
 		record.RemoteFile,
 		record.Status,
 		record.Message,
+		record.StartMongoId,
+		record.EndMongoId,
 		record.StartTokenB64,
 		record.ResumeTokenB64,
 	)
@@ -91,6 +95,8 @@ func (t *DBCollectionFileTracker) GetLastUpload(context context.Context, db stri
     remote_file,
     status,
     message,
+    start_mongo_id,
+    end_mongo_id,
     start_token_b64,
     resume_token_b64
 	from sync_file_tracking  where db = $1  and collection = $2
@@ -98,7 +104,10 @@ func (t *DBCollectionFileTracker) GetLastUpload(context context.Context, db stri
 `, db, collection)
 
 	record = &CollectionFileTrackingRecord{}
-	err = row.Scan(&record.DB, &record.Collection, &record.RemoteFile, &record.Status, &record.Message, &record.StartTokenB64, &record.ResumeTokenB64)
+	err = row.Scan(&record.DB, &record.Collection, &record.RemoteFile, &record.Status, &record.Message,
+		&record.StartMongoId, &record.EndMongoId,
+		&record.StartTokenB64, &record.ResumeTokenB64)
+
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, false, nil
 	}

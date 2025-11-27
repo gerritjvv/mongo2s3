@@ -23,11 +23,17 @@ type S3Provider struct {
 }
 
 func (p *S3Provider) UploadFile(context context.Context, reader io.Reader, remoteKey string) error {
-	_, err := p.S3Client.PutObject(context, &s3.PutObjectInput{
+	outPut, err := p.S3Client.PutObject(context, &s3.PutObjectInput{
 		Bucket: aws.String(p.Bucket),
 		Key:    aws.String(remoteKey),
 		Body:   reader,
 	})
+	if err != nil {
+		Log.Info("Failed Uploading file to S3", "remoteKey", remoteKey, "bucket", p.Bucket, "error", err.Error())
+	} else {
+		Log.Info("Uploading file to S3", "remoteKey", remoteKey, "bucket", p.Bucket, "size", outPut.Size)
+	}
+
 	return err
 }
 
@@ -88,7 +94,7 @@ func ProcessUploadingFilesFromChannel(context context.Context,
 		select {
 		case <-context.Done():
 			Log.Info("Uploading context done")
-			return context.Err()
+			return nil
 		case localFile, ok := <-uploadch:
 			if !ok {
 				Log.Info("Uploading channel closed")
@@ -130,6 +136,8 @@ func processFileToUpload(ctx context.Context, provider UploadProvider, tracker C
 		RemoteFile:     remoteFile,
 		Status:         "pending",
 		Message:        "",
+		StartMongoId:   metaFileData.StartMongoId,
+		EndMongoId:     metaFileData.EndMongoId,
 		StartTokenB64:  metaFileData.StartTokenB64,
 		ResumeTokenB64: metaFileData.ResumeTokenB64,
 	}

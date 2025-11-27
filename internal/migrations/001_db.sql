@@ -5,6 +5,8 @@ CREATE TABLE IF NOT EXISTS sync_file_tracking (
     remote_file text,
     status text,
     message text,
+    start_mongo_id char(24),
+    end_mongo_id char(24),
     start_token_b64 text,
     resume_token_b64 text,
     created_at timestamp with time zone DEFAULT now()

@@ -62,7 +62,6 @@ func SyncEvents(context context.Context,
 	})
 
 	for cs.Next(context) {
-		slog.Info("Received change event")
 		if err := cs.Err(); err != nil {
 			errorCh <- TraceErr(err)
 		}
@@ -99,6 +98,8 @@ func writeEvents(
 	defer sizeCheckTicker.Stop()
 
 	var resumeToken bson.Raw
+	var mongoEndId string
+
 	var err error
 	newLine := []byte("")
 	rollingFile, err := NewRollingFile(conf, collection)
@@ -126,7 +127,7 @@ func writeEvents(
 		case <-ctx.Done():
 			// context is done, we should bail
 			if bytesWritten {
-				rollingFile, err = RollFile(rollingFile, conf, collection, resumeToken, uploadCh)
+				rollingFile, err = RollFile(rollingFile, conf, collection, resumeToken, mongoEndId, uploadCh)
 				if err != nil {
 					return TraceErr(err)
 				}
@@ -138,7 +139,7 @@ func writeEvents(
 				// the channel is closed, we should finish up and return
 				Log.Info("events channel closed")
 				if bytesWritten {
-					rollingFile, err = RollFile(rollingFile, conf, collection, resumeToken, uploadCh)
+					rollingFile, err = RollFile(rollingFile, conf, collection, resumeToken, mongoEndId, uploadCh)
 					if err != nil {
 						return TraceErr(err)
 					}
@@ -152,8 +153,11 @@ func writeEvents(
 
 			event := eventCombo.Event
 			resumeToken = eventCombo.ResumeToken
+			idHex := event.FullDocument["_id"].(bson.ObjectID).Hex()
+			mongoEndId = idHex
 
 			if !bytesWritten {
+				rollingFile.StartMongoId = mongoEndId
 				rollingFile.StartToken = resumeToken
 			}
 
@@ -166,7 +170,7 @@ func writeEvents(
 			// time to check file size
 			if bytesWritten && isSizeThresholdReached(rollingFile, conf) {
 				Log.Info("rolling file because size threshold reached ", "file", rollingFile.FileName)
-				rollingFile, err = RollFile(rollingFile, conf, collection, resumeToken, uploadCh)
+				rollingFile, err = RollFile(rollingFile, conf, collection, resumeToken, mongoEndId, uploadCh)
 				if err != nil {
 					return TraceErr(err)
 				}
@@ -177,7 +181,7 @@ func writeEvents(
 			if bytesWritten {
 				Log.Info("rolling file because time threshold reached ", "file", rollingFile.FileName)
 
-				rollingFile, err = RollFile(rollingFile, conf, collection, resumeToken, uploadCh)
+				rollingFile, err = RollFile(rollingFile, conf, collection, resumeToken, mongoEndId, uploadCh)
 				if err != nil {
 					return TraceErr(err)
 				}
@@ -222,20 +226,20 @@ func writeToFile(writer *gzip.Writer, event *ChangeEvent, newLine []byte) error 
 
 // RollFile forces the current rollingFile object to close, the moveFile is called which will move the file to its final name
 // and a new rollingFile struct is created
-func RollFile(rollingFile *RollingFile, conf Config, collection MongoCollection, resumeToken bson.Raw, uploadCh chan<- string) (*RollingFile, error) {
+func RollFile(rollingFile *RollingFile, conf Config, collection MongoCollection, resumeToken bson.Raw, endMongoId string, uploadCh chan<- string) (*RollingFile, error) {
 	// close and roll
 	err := rollingFile.Close()
 	if err != nil {
-		Log.Error("file %s close error: %s", rollingFile.FileName, err)
-		return nil, err
+		Log.Error("error closing file", "file", rollingFile.FileName, "error", err.Error())
+		return nil, TraceErr(err)
 	}
 	movedFile, err := moveFile(conf, collection, rollingFile.FileName)
 	if err != nil {
-		return nil, err
+		return nil, TraceErr(err)
 	}
 	metaFile, err := os.Create(fmt.Sprintf("%s.meta", movedFile))
 	if err != nil {
-		return nil, err
+		return nil, TraceErr(err)
 	}
 
 	uploadfileName := UploadFileName{
@@ -243,21 +247,23 @@ func RollFile(rollingFile *RollingFile, conf Config, collection MongoCollection,
 		Collection:     collection.Name,
 		SourceFileName: movedFile,
 		Nanos:          time.Now().UnixNano(),
+		StartMongoId:   rollingFile.StartMongoId,
+		EndMongoId:     endMongoId,
 		ResumeTokenB64: base64.URLEncoding.EncodeToString(resumeToken),
 		StartTokenB64:  base64.StdEncoding.EncodeToString(rollingFile.StartToken),
 	}
 
 	bts, err := json.Marshal(uploadfileName)
 	if err != nil {
-		return nil, err
+		return nil, TraceErr(err)
 	}
 	_, err = metaFile.Write(bts)
 	if err != nil {
-		return nil, err
+		return nil, TraceErr(err)
 	}
 	err = metaFile.Close()
 	if err != nil {
-		return nil, err
+		return nil, TraceErr(err)
 	}
 
 	// queue file for uploading
@@ -265,7 +271,7 @@ func RollFile(rollingFile *RollingFile, conf Config, collection MongoCollection,
 
 	rollingFile, err = NewRollingFile(conf, collection)
 	if err != nil {
-		return nil, err
+		return nil, TraceErr(err)
 	}
 	return rollingFile, nil
 }
@@ -290,10 +296,11 @@ func makeFileName(collectionName string) string {
 }
 
 type RollingFile struct {
-	StartToken bson.Raw
-	File       *os.File
-	Writer     *gzip.Writer
-	FileName   string
+	StartToken   bson.Raw
+	StartMongoId string
+	File         *os.File
+	Writer       *gzip.Writer
+	FileName     string
 }
 
 func (r *RollingFile) String() string {
