@@ -35,12 +35,12 @@ func RunMigrations(db *DB, ctx context.Context) error {
 			return err
 		}
 
-		fmt.Printf("found migration file: %s\n", e.Name())
+		Log.Info("found migration file", "file", e.Name())
 		_, execErr := db.Connection.Exec(ctx, string(contents))
 		if execErr != nil {
 			return fmt.Errorf("migration %s failed: %w", e.Name(), execErr)
 		}
-		fmt.Println("applied migration:", e.Name())
+		Log.Info("applied migration:", "file", e.Name())
 	}
 	return nil
 }
@@ -78,7 +78,7 @@ DO UPDATE SET
 		record.ResumeTokenB64,
 	)
 	if err != nil {
-		fmt.Printf("error updating file status: %s\n", err)
+		Log.Error("error updating file status", "error", err)
 		return TraceErr(err)
 	}
 	return nil

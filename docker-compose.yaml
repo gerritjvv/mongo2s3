@@ -74,5 +74,23 @@ services:
       - ./testconfig.yaml:/app/config.yaml   # if needed
     command: [ "--config", "config.yaml" ]
 
+  mongo2s3fullload:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      - mongodb
+      - seaweed-s3
+    environment:
+      S3_ENDPOINT: "http://seaweed-s3:8333"
+      S3_ACCESS_KEY: "local-access-key"
+      S3_SECRET_KEY: "local-secret-key"
+      S3_REGION: "us-east-1"
+      AWS_EC2_METADATA_DISABLED: "true"
+      MONGO_URL: "mongodb://mongodb:27017"
+    volumes:
+      - ./testconfig.yaml:/app/config.yaml
+    command: [ "--config", "config.yaml", "--full-load"]
+
 volumes:
   pgdata:

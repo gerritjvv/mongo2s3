@@ -1,5 +1,5 @@
 db_url: "postgres://myuser:mypass@postgres:5432/mydb?sslmode=disable"
-mongo_url: "mongodb://mongodb:27017"
+mongo_url: "mongodb://mongodb.mongo2s3.orb.local:27017"
 local_base_dir: "/tmp/"
 
 s3_bucket: "test"
@@ -10,5 +10,7 @@ file_write_timeout_second: "10s"
 file_write_size_bytes: 1048576
 
 collections:
+  - db: "test"
+    name: "users"
   - db: "test"
     name: "test"

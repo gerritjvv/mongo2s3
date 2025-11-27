@@ -10,6 +10,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -34,9 +35,10 @@ func SyncEvents(context context.Context,
 	opts = opts.SetFullDocument(options.UpdateLookup)
 
 	if resumeToken != nil && len(resumeToken) > 0 {
+		slog.Info("Setting up ResumeToken", "token", resumeToken)
 		opts = opts.SetResumeAfter(resumeToken)
 	}
-
+	Log.Info("Starting Watch", "db", collection.DB, "collection", collection.Name)
 	cs, err := db.Collection(collection.Name).Watch(context, mongo.Pipeline{}, opts)
 
 	if err != nil {
@@ -52,16 +54,15 @@ func SyncEvents(context context.Context,
 
 	var wg sync.WaitGroup
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		err := writeEvents(context, conf, collection, writerCh, uploaderCh)
-		if err != nil {
-			errorCh <- TraceErr(err)
+	wg.Go(func() {
+		err1 := writeEvents(context, conf, collection, writerCh, uploaderCh)
+		if err1 != nil {
+			errorCh <- TraceErr(err1)
 		}
-	}()
-	for cs.Next(context) {
+	})
 
+	for cs.Next(context) {
+		slog.Info("Received change event")
 		if err := cs.Err(); err != nil {
 			errorCh <- TraceErr(err)
 		}
@@ -72,7 +73,7 @@ func SyncEvents(context context.Context,
 		if err != nil {
 			errorCh <- TraceErr(err)
 		}
-		//fmt.Printf("Event Op Type: %s\n", event.OperationType)
+		//internal.Log.Info("Event Op Type: %s", event.OperationType)
 		if event.OperationType == "update" || event.OperationType == "insert" {
 			// send to writer the event and the resume token
 			writerCh <- &ChangeEventCombo{Event: &event, ResumeToken: cs.ResumeToken()}
@@ -99,7 +100,7 @@ func writeEvents(
 
 	var resumeToken bson.Raw
 	var err error
-	newLine := []byte("\n")
+	newLine := []byte("")
 	rollingFile, err := NewRollingFile(conf, collection)
 	if err != nil {
 		return TraceErr(err)
@@ -110,7 +111,7 @@ func writeEvents(
 			err := rollingFile.Close()
 
 			if err != nil {
-				fmt.Printf("error closing rolling file on defer: %s\n", TraceErr(err))
+				Log.Error("error closing rolling file on defer", "error", TraceErr(err).Error())
 			}
 			rollingFile.Delete()
 		}
@@ -131,11 +132,11 @@ func writeEvents(
 				}
 				bytesWritten = false
 			}
-			return ctx.Err()
+			return nil
 		case eventCombo, ok := <-chevents:
 			if !ok {
 				// the channel is closed, we should finish up and return
-				fmt.Println("events channel closed")
+				Log.Info("events channel closed")
 				if bytesWritten {
 					rollingFile, err = RollFile(rollingFile, conf, collection, resumeToken, uploadCh)
 					if err != nil {
@@ -146,7 +147,7 @@ func writeEvents(
 				return nil
 			}
 			if !bytesWritten {
-				fmt.Printf("1.get first event %v %s %s\n", eventCombo, collection.DB, collection.Name)
+				Log.Info("get first event after roll", "db", collection.DB, "collection", collection.Name)
 			}
 
 			event := eventCombo.Event
@@ -164,7 +165,7 @@ func writeEvents(
 		case <-sizeCheckTicker.C:
 			// time to check file size
 			if bytesWritten && isSizeThresholdReached(rollingFile, conf) {
-				fmt.Printf("rolling file %s because size threshold reached \n", rollingFile.String())
+				Log.Info("rolling file because size threshold reached ", "file", rollingFile.FileName)
 				rollingFile, err = RollFile(rollingFile, conf, collection, resumeToken, uploadCh)
 				if err != nil {
 					return TraceErr(err)
@@ -174,7 +175,7 @@ func writeEvents(
 		case <-timer.C:
 			// write to file timeout, we need to roll if any data
 			if bytesWritten {
-				fmt.Printf("rolling file %s because time threshold reached \n", rollingFile)
+				Log.Info("rolling file because time threshold reached ", "file", rollingFile.FileName)
 
 				rollingFile, err = RollFile(rollingFile, conf, collection, resumeToken, uploadCh)
 				if err != nil {
@@ -193,7 +194,7 @@ func isSizeThresholdReached(rollingFile *RollingFile, conf Config) bool {
 	stat, err := rollingFile.Stat()
 	if err != nil {
 		// try again if we can't stat the size
-		fmt.Printf("file %s stat error: %s\n", rollingFile.FileName, err)
+		Log.Error("file %s stat error: %s", rollingFile.FileName, err)
 		return false
 	}
 	if stat.Size() >= conf.FileWriteSizeBytes {
@@ -225,7 +226,7 @@ func RollFile(rollingFile *RollingFile, conf Config, collection MongoCollection,
 	// close and roll
 	err := rollingFile.Close()
 	if err != nil {
-		fmt.Printf("file %s close error: %s\n", rollingFile.FileName, err)
+		Log.Error("file %s close error: %s", rollingFile.FileName, err)
 		return nil, err
 	}
 	movedFile, err := moveFile(conf, collection, rollingFile.FileName)
@@ -310,7 +311,7 @@ func (r *RollingFile) Delete() {
 
 	err := os.Remove(r.FileName)
 	if err != nil {
-		fmt.Printf("file %s delete error: %s\n", r.FileName, err)
+		Log.Error("file %s delete error: %s", r.FileName, err)
 	}
 }
 
@@ -342,4 +343,56 @@ func NewRollingFile(conf Config, collection MongoCollection) (*RollingFile, erro
 		Writer:   writer,
 		FileName: file.Name(),
 	}, nil
+}
+
+func FullLoad(ctx context.Context, conf Config, conn *mongo.Client, collection MongoCollection, uploaderCh chan string, errorCh chan error) error {
+	db := conn.Database(collection.DB)
+
+	cs, err := db.Collection(collection.Name).Find(ctx, bson.M{})
+	if err != nil {
+		return TraceErr(fmt.Errorf("error trying to scan collection : %s; %s", collection.Name, err))
+	}
+	defer func() {
+		err := cs.Close(ctx)
+		if err != nil {
+			errorCh <- TraceErr(err)
+		}
+	}()
+	writerCh := make(chan *ChangeEventCombo, 100)
+
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		err := writeEvents(ctx, conf, collection, writerCh, uploaderCh)
+		if err != nil {
+			errorCh <- TraceErr(err)
+		}
+	}()
+
+	for cs.Next(ctx) {
+		if err = cs.Err(); err != nil {
+			errorCh <- TraceErr(err)
+		}
+		raw := cs.Current
+
+		var fullDoc bson.M
+		_ = bson.Unmarshal(raw, &fullDoc)
+		ev := &ChangeEvent{
+			OperationType: "",
+			FullDocument:  fullDoc,
+		}
+		ev.Namespace.DB = collection.DB
+		ev.Namespace.Coll = collection.Name
+
+		writerCh <- &ChangeEventCombo{
+			Event:       ev,
+			ResumeToken: nil,
+		}
+	}
+
+	close(writerCh)
+	wg.Wait()
+	return nil
 }

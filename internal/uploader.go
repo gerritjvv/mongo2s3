@@ -87,21 +87,24 @@ func ProcessUploadingFilesFromChannel(context context.Context,
 	for {
 		select {
 		case <-context.Done():
+			Log.Info("Uploading context done")
 			return context.Err()
 		case localFile, ok := <-uploadch:
 			if !ok {
-				fmt.Printf("Uploading channel closed\n")
+				Log.Info("Uploading channel closed")
 				return nil
 			}
 			if localFile == "" {
-				fmt.Printf("Uploading local file is empty\n")
+				Log.Info("Uploading local file is empty")
 				continue
 			}
 			// check if file exists
-			fmt.Printf("Processing upload for metadata file %s\n", localFile)
+			Log.Info("Processing upload for metadata file", "file", localFile)
 			err := processFileToUpload(context, provider, tracker, localFile, errorch)
+			Log.Info("completed upload for metadata file", "file", localFile)
 			if err != nil {
-				errorch <- err
+				Log.Error("Uploading failed for metadata file", "file", localFile, "error", err.Error())
+				errorch <- TraceErr(err)
 			}
 		}
 	}
@@ -110,7 +113,7 @@ func ProcessUploadingFilesFromChannel(context context.Context,
 func processFileToUpload(ctx context.Context, provider UploadProvider, tracker CollectionFileTracker, metaDataFileName string, errorCh chan<- error) error {
 	metaFileData, err := ParseUploadFileName(metaDataFileName)
 	if err != nil {
-		fmt.Printf("Cannot read metadata file for upload %s\n", metaDataFileName)
+		Log.Error("Cannot read metadata file for upload", "file", metaDataFileName, "error", err.Error())
 		return err
 	}
 	t := time.Unix(0, metaFileData.Nanos)
@@ -140,7 +143,7 @@ func processFileToUpload(ctx context.Context, provider UploadProvider, tracker C
 		defer func() {
 			errClose := f.Close()
 			if errClose != nil {
-				fmt.Println(TraceErr(errClose))
+				Log.Error("error closing file", "file", f.Name(), "error", TraceErr(errClose).Error())
 			}
 		}()
 		uploadErr = provider.UploadFile(ctx, f, remoteFile)
