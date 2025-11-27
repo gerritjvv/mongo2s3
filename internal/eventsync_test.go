@@ -47,7 +47,7 @@ func TestNewRollingFile(t *testing.T) {
 	resumeToken := []byte("mytoken")
 	uploadCh := make(chan string, 10)
 
-	newRollingFile, err := RollFile(rollingFile, config, collections[0], resumeToken, uploadCh)
+	newRollingFile, err := RollFile(rollingFile, config, collections[0], resumeToken, "", uploadCh)
 	if err != nil {
 		t.Error(err)
 		return
