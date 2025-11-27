@@ -27,6 +27,7 @@ func main() {
 
 	configFile := flag.String("config", "", "config file")
 	fullLoad := flag.Bool("full-load", false, "indicate if we should do a full load")
+	errorReLoad := flag.Bool("error-re-load", false, "indicate if we should check for errored files and try to reload")
 
 	flag.Parse()
 	if *configFile == "" {
@@ -103,10 +104,16 @@ func main() {
 
 	if *fullLoad {
 		doFullLoad(config, tracker, ctx, mongoClient, uploadProvider, sigCh, cancel)
+	} else if *errorReLoad {
+		doErrorReload(config, tracker, ctx, mongoClient, uploadProvider, sigCh, cancel)
 	} else {
 		doCDC(config, tracker, ctx, err, mongoClient, uploadProvider, sigCh, cancel)
 	}
 
+}
+
+func doErrorReload(config internal.Config, tracker *internal.DBCollectionFileTracker, ctx context.Context, client *mongo.Client, provider internal.UploadProvider, ch chan os.Signal, cancel context.CancelFunc) {
+	// TODO for each errored tracking file, try to load from disk or reload from mongo
 }
 
 func doFullLoad(config internal.Config, tracker *internal.DBCollectionFileTracker, ctx context.Context, mongoClient *mongo.Client, uploadProvider internal.UploadProvider, sigCh chan os.Signal, cancel context.CancelFunc) {
