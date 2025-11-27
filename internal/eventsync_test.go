@@ -10,7 +10,7 @@ import (
 func TestNewRollingFile(t *testing.T) {
 
 	collections := []MongoCollection{
-		MongoCollection{
+		{
 			DB:   "test",
 			Name: "test",
 		},

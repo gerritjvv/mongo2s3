@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/docker/go-connections/nat"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 	"io"
@@ -17,7 +19,7 @@ type TestUploadProvider struct {
 	UploadFiles map[string]bool
 }
 
-func (p *TestUploadProvider) UploadFile(context context.Context, reader io.Reader, remoteKey string) error {
+func (p *TestUploadProvider) UploadFile(_ context.Context, _ io.Reader, remoteKey string) error {
 	p.UploadFiles[remoteKey] = true
 	return nil
 }
@@ -33,7 +35,15 @@ func TestFileUploadToS3(t *testing.T) {
 			"POSTGRES_PASSWORD": "test",
 			"POSTGRES_DB":       "testdb",
 		},
-		WaitingFor: wait.ForListeningPort("5432/tcp"),
+		WaitingFor: wait.ForSQL(
+			"5432/tcp",
+			"pgx",
+			func(host string, port nat.Port) string {
+				return fmt.Sprintf(
+					"postgres://test:test@%s:%s/testdb?sslmode=disable",
+					host, port.Port(),
+				)
+			}).WithQuery("select 1").WithStartupTimeout(10 * time.Second),
 	}
 
 	pgContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
