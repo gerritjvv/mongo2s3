@@ -49,6 +49,38 @@ type DBCollectionFileTracker struct {
 	DB *DB
 }
 
+func (t *DBCollectionFileTracker) GetErroringFiles(context context.Context) ([]CollectionFileTrackingRecord, error) {
+	rows, err := t.DB.Connection.Query(context, `
+	select db,
+    collection,
+    remote_file,
+    status,
+    message,
+    start_mongo_id,
+    end_mongo_id,
+    start_token_b64,
+    resume_token_b64
+	from sync_file_tracking where status = 'error' order by created_at desc
+	limit 500
+`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var records []CollectionFileTrackingRecord
+
+	for rows.Next() {
+		var record CollectionFileTrackingRecord
+		err = rows.Scan(&record.DB, &record.Collection, &record.RemoteFile, &record.Status, &record.Message,
+			&record.StartMongoId, &record.EndMongoId,
+			&record.StartTokenB64, &record.ResumeTokenB64)
+
+		records = append(records, record)
+	}
+	return records, nil
+}
+
 func (t *DBCollectionFileTracker) UpdateFileStatus(context context.Context, record CollectionFileTrackingRecord) error {
 	_, err := t.DB.Connection.Exec(context,
 		`

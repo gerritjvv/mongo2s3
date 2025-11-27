@@ -1,3 +1,74 @@
+# Overview
+
+This tool copies inserts and updates from a MongoDB into any S3 compatible storage.
+It's quick and kept purposefully simple as can be. The design is to get the raw data into S3, and once there, other
+datawarehouse tools and queries
+can be used to deduplicate and parse the data into for example parquet or iceberg.
+
+No assumption is made about the collection schemas. Data is written as JSON via the `bson` package and each record is
+written on a new line.
+For updates, the full document is rewritten, not just the changes. This works best in a datawarehouse where most of the
+time you want the latest document
+and can get that by doing a distinct on the id object.
+
+Important: This tool does not deduplicate, it copies data faithfully and is designed to avoid data loss.
+
+# Usage
+
+This app can be run in two modes, full load, or cdc sync.
+CDC sync is the default, and run full load, you should pass in the --full-load flag.
+
+When starting sync for the first time, run the CDC mode, and then run the full load modes separately once.
+
+# Deploy and Requirements
+
+This app requires a postgres database for tracking the files and of course a MongoDB slave to pull against. Do not
+connect it to a MongoDB master, the Mongo CDC will not work that way.
+It also requires access to a S3 compatible storage, that supports `PutObject`.
+
+# Configuration
+
+The app is yaml file config driven. If you're in a container environment like Kubernetes, you'll need to mount in the
+configmap.
+
+Here's an example config, I use for testing:
+
+```
+db_url: "postgres://myuser:mypass@postgres:5432/mydb?sslmode=disable"
+mongo_url: "mongodb://mongodb.mongo2s3.orb.local:27017"
+local_base_dir: "/tmp/"
+
+s3_bucket: "test"
+s3_region: "us-east-1"
+s3_prefix: "/data"
+
+file_write_timeout_second: "10s"
+file_write_size_bytes: 1048576
+
+collections:
+  - db: "test"
+    name: "users"
+  - db: "test"
+    name: "test"
+```
+
+Try to split instances of this app between big collectio and clumping together smaller collections in a single instance.
+If you have highvolume very time sensitive collections put each in their own instance (Pod, Task).
+
+A file write timeout of 1-5 minutes and a file size bytes of 128-256mb are normally good values for raw ingestion files.
+You want to strike a balance between lag for data into your datawarehouse and the number of files.
+
+S3 configuration is configured using the standard AWS S3 environment variables. For exmaple I needed to provide the
+values below when connecting to seaweed-fs:
+
+```
+S3_ENDPOINT: "http://seaweed-s3:8333"
+S3_ACCESS_KEY: "local-access-key"
+S3_SECRET_KEY: "local-secret-key"
+S3_REGION: "us-east-1"
+AWS_EC2_METADATA_DISABLED: "true"
+```
+
 # Development
 
 Using docker-compose is the best way to check and test.
@@ -37,36 +108,41 @@ docker-compose up --build --force-recreate mongo2s3
 docker-compose up --build --force-recreate mongo2s3fullload
 ```
 
-# TODO
+# Sync Semantics
 
-* Uploader
-* We need a way to track the files uploaded and the sync tokens. This way we can know what's uploaded to s3. <-- done
-* We need to cleanout the tracking files.
-    * Add DB connection <-- done
-* If no resume token we should:
-  start a change stream
-  then start a full scan (if configured to do so)
-  this ensures new data is uploaded but the full scan will continue in the background till complete.
-  We need a new table and record here to check the full load
+## Sync from CDC
 
-use coll.Find(ctx, bson.M)
-if id is oid like:
-{"age":31,"_id":{"$oid":"6921c82509367aaeff1a792b"},"name":"test"}
+This program uses CDC mongo mechanism via `watch`. It reads data continuousely (ignoring deletes) and sends them to a
+writer channel.
+The writer channel will accumulate data locally as json/gzip till either the file write timeout has been reached since
+the file was created, or the file size is over the threshold.
+Once one of these conditions are true, the file is renamed and pushed to an s3 compatible storage.
 
-we can get the document insertion id using:
+Files are uploaded using a configured bucket and prefix, and a year, moth, day, hour path partition. For example, '
+data/year=2025/month=11/day=25/hour=22/file_1235.gz'.
+The date for the partition reflects when the file was uploaded and not the actual database record date.
 
-objID := doc["_id"].(primitive.ObjectID)
-createdAt := objID.Timestamp()
-fmt.Println(createdAt)
+Note: The file size threshold will never be exact as gzip uses internal buffers and we can only see the full file size
+when these bytes are flushed.
 
-This means we can full scan and get the original dates.
+## Sync Checkpointing
 
-The problem is we start receiving new events, and then start the scan we may run into duplicates.
-So before uploading from a scan we should check if any resume tokens and if any we need to keep that as a step form whre
-beyond we cannot scan.
-Or we accept that there may be a slight duplication of records. This should be fine given that the ids can be used to
-deduplicate.
+I used a database to keep track of every file that was uploaded, which includes the first and last mongo id, and the
+start and resume cdc tokens.
+When the application is restarted the last resume cdc token is read for a db and collection, and passed to the mongo
+CDC.
 
-* Retry on error. When there are upload errors each runner hsould check for local files and try to upload
-*
-* We need telemtry here and jaeger support
+## Error files
+
+It's not if errors happen but when. If a fatal crash, this app will continue from the last CDC resume token for a db and
+collection.
+If the file was written but could not be uploaded, the CDC mecanism will continue without issues, happily reading and
+writing to disk.
+
+By default, there is a routine that checks preriodically for files in the track db that could not be uploaded. These are
+marked with 'status=error'.
+When they are found, the app will use the start and end mongo ids in the db to re-read that slice of data.
+
+Some improvement can be made here to check if the local file exists, but at the moment of writing this is not a priority
+and data is recovered, albeit slower.
+

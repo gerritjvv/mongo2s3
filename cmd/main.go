@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 )
 
 func main() {
@@ -27,7 +28,7 @@ func main() {
 
 	configFile := flag.String("config", "", "config file")
 	fullLoad := flag.Bool("full-load", false, "indicate if we should do a full load")
-	errorReLoad := flag.Bool("error-re-load", false, "indicate if we should check for errored files and try to reload")
+	errorReLoad := flag.Bool("error-re-load", true, "indicate if we should check for errored files and try to reload")
 
 	flag.Parse()
 	if *configFile == "" {
@@ -103,20 +104,106 @@ func main() {
 	tracker := &internal.DBCollectionFileTracker{DB: db}
 
 	if *fullLoad {
-		doFullLoad(config, tracker, ctx, mongoClient, uploadProvider, sigCh, cancel)
-	} else if *errorReLoad {
-		doErrorReload(config, tracker, ctx, mongoClient, uploadProvider, sigCh, cancel)
+		exitCode := doFullLoad(config, tracker, ctx, mongoClient, uploadProvider, sigCh, cancel, bson.M{})
+		os.Exit(exitCode)
 	} else {
-		doCDC(config, tracker, ctx, err, mongoClient, uploadProvider, sigCh, cancel)
+		var wg sync.WaitGroup
+		if *errorReLoad {
+			// we need a new connection for this goroutine
+			db2, err := internal.NewDBConnect(config)
+			if err != nil {
+				internal.Log.Error("unable to connect to sync's postgres db, please check your config", "error: ", err.Error())
+				os.Exit(6)
+				return
+			}
+			defer func() {
+				closeErr := db2.Connection.Close(ctx)
+				if closeErr != nil {
+					internal.Log.Error("error closing sync's postgres connection", "error: ", closeErr.Error())
+				}
+			}()
+			tracker2 := &internal.DBCollectionFileTracker{DB: db2}
+
+			wg.Go(func() {
+				for {
+					select {
+					case <-sigCh:
+						return
+					case <-ctx.Done():
+						return
+					case <-time.After(time.Second * 10):
+						internal.Log.Info("Checking for errored uploads")
+						doErrorReload(config, tracker2, ctx, mongoClient, uploadProvider, sigCh, cancel)
+					}
+				}
+			})
+		}
+
+		wg.Go(func() {
+			doCDC(config, tracker, ctx, err, mongoClient, uploadProvider, sigCh, cancel)
+		})
+
+		wg.Wait()
 	}
 
 }
 
-func doErrorReload(config internal.Config, tracker *internal.DBCollectionFileTracker, ctx context.Context, client *mongo.Client, provider internal.UploadProvider, ch chan os.Signal, cancel context.CancelFunc) {
-	// TODO for each errored tracking file, try to load from disk or reload from mongo
+// doErrorReload Takes all the records with status error, which means they are not in s3 and rereads the data from mongo
+// the reread happens by using the doFullLoad and passing in a filter that selects data between the first and last tokens
+// the file that had an error status is marked as deprecated
+func doErrorReload(config internal.Config, tracker *internal.DBCollectionFileTracker, ctx context.Context, mongoClient *mongo.Client, uploadProvider internal.UploadProvider, sigCh chan os.Signal, cancel context.CancelFunc) {
+	erroringFiles, err := tracker.GetErroringFiles(ctx)
+	if err != nil {
+		internal.Log.Error("error getting erroring files", "error", err.Error())
+		return
+	}
+	internal.Log.Info("Found erroring files", "erroringFiles", len(erroringFiles))
+	for _, erroringFile := range erroringFiles {
+		// scan from db
+		internal.Log.Info("Scan error file", "file", erroringFile.RemoteFile)
+		startOID, err := bson.ObjectIDFromHex(erroringFile.StartMongoId)
+		status := erroringFile.Status
+		message := erroringFile.Message
+		var failed = false
+		if err != nil {
+			internal.Log.Error("error parsing startOID", "error", err.Error())
+			status = "invalid"
+			message = fmt.Sprintf("error parsing startOID %s; %s", err, message)
+			failed = true
+		}
+
+		endOID, err := bson.ObjectIDFromHex(erroringFile.EndMongoId)
+		if err != nil {
+			internal.Log.Error("error parsing endOID", "error", err.Error())
+			status = "invalid"
+			message = fmt.Sprintf("error parsing endOID %s; %s", err, message)
+			failed = true
+		}
+
+		if !failed {
+			filter := bson.M{
+				"_id": bson.M{
+					"$gte": startOID,
+					"$lte": endOID,
+				},
+			}
+
+			doFullLoad(config, tracker, ctx, mongoClient, uploadProvider, sigCh, cancel, filter)
+			status = "deprecated"
+			message = fmt.Sprintf("data was reloaded into a new files; %s", message)
+		}
+		erroringFile.Status = status
+		erroringFile.Message = message
+
+		err = tracker.UpdateFileStatus(ctx, erroringFile)
+		if err != nil {
+			internal.Log.Error("error updating file status", "error", err.Error())
+		}
+	}
 }
 
-func doFullLoad(config internal.Config, tracker *internal.DBCollectionFileTracker, ctx context.Context, mongoClient *mongo.Client, uploadProvider internal.UploadProvider, sigCh chan os.Signal, cancel context.CancelFunc) {
+func doFullLoad(config internal.Config, tracker *internal.DBCollectionFileTracker, ctx context.Context, mongoClient *mongo.Client, uploadProvider internal.UploadProvider, sigCh chan os.Signal,
+	cancel context.CancelFunc, filter bson.M) int {
 
 	var wg sync.WaitGroup
 	var errWg sync.WaitGroup
@@ -131,7 +218,7 @@ func doFullLoad(config internal.Config, tracker *internal.DBCollectionFileTracke
 
 		fullLoadWg.Go(func() {
 			internal.Log.Info("Starting full load for %s %s", coll.DB, coll.Name)
-			if syncErr := internal.FullLoad(ctx, config, mongoClient, coll, uploaderCh, specificErrorCh); syncErr != nil {
+			if syncErr := internal.FullLoad(ctx, config, mongoClient, coll, uploaderCh, specificErrorCh, filter); syncErr != nil {
 				internal.Log.Error("error while running a full load", "error: ", syncErr.Error(), "db", coll.DB, "collection", coll.Name)
 				specificErrorCh <- syncErr
 			}
@@ -211,22 +298,18 @@ outer:
 	close(errorCh)
 	finalErrWg.Wait()
 	internal.Log.Info("Bye")
-	os.Exit(0)
+	return 0
 }
 
 func doCDC(config internal.Config, tracker *internal.DBCollectionFileTracker, ctx context.Context, err error, mongoClient *mongo.Client, uploadProvider internal.UploadProvider, sigCh chan os.Signal, cancel context.CancelFunc) {
 	var wg sync.WaitGroup
 	var errWg sync.WaitGroup
-	uploadChannels := make([]chan string, 0)
-	specificErrorChannels := make([]chan error, 0)
 
 	errorCh := make(chan error, 100)
 	for _, _coll := range config.Collections {
 		coll := _coll
 		uploaderCh := make(chan string, 100)
-		uploadChannels = append(uploadChannels, uploaderCh)
 		specificErrorCh := make(chan error, 100)
-		specificErrorChannels = append(specificErrorChannels, specificErrorCh)
 
 		var resumeToken bson.Raw
 		lastTracking, found, getLastUploadErrr := tracker.GetLastUpload(ctx, coll.DB, coll.Name)
@@ -250,6 +333,7 @@ func doCDC(config internal.Config, tracker *internal.DBCollectionFileTracker, ct
 				specificErrorCh <- syncErr
 			}
 			internal.Log.Info("Stopped sync", "db", coll.DB, "collection", coll.Name)
+			close(uploaderCh)
 		})
 
 		wg.Go(func() {
@@ -259,6 +343,7 @@ func doCDC(config internal.Config, tracker *internal.DBCollectionFileTracker, ct
 				specificErrorCh <- uploadError
 			}
 			internal.Log.Info("Stopped uploads", "db", coll.DB, "collection", coll.Name)
+			close(specificErrorCh)
 		})
 
 		errWg.Go(func() {
@@ -294,18 +379,9 @@ func doCDC(config internal.Config, tracker *internal.DBCollectionFileTracker, ct
 			internal.Log.Info("Shutting down...")
 			cancel()
 		case <-ctx.Done():
-			for _, ch := range uploadChannels {
-				close(ch)
-			}
 			wg.Wait()
-			for _, ch := range specificErrorChannels {
-				close(ch)
-			}
 			errWg.Wait()
-			close(errorCh)
 			finalErrWg.Wait()
-			internal.Log.Info("Bye")
-			os.Exit(0)
 		}
 	}
 }

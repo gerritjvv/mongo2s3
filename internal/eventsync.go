@@ -352,10 +352,10 @@ func NewRollingFile(conf Config, collection MongoCollection) (*RollingFile, erro
 	}, nil
 }
 
-func FullLoad(ctx context.Context, conf Config, conn *mongo.Client, collection MongoCollection, uploaderCh chan string, errorCh chan error) error {
+func FullLoad(ctx context.Context, conf Config, conn *mongo.Client, collection MongoCollection, uploaderCh chan string, errorCh chan error, filter bson.M) error {
 	db := conn.Database(collection.DB)
 
-	cs, err := db.Collection(collection.Name).Find(ctx, bson.M{})
+	cs, err := db.Collection(collection.Name).Find(ctx, filter)
 	if err != nil {
 		return TraceErr(fmt.Errorf("error trying to scan collection : %s; %s", collection.Name, err))
 	}
