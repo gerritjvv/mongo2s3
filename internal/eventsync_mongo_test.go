@@ -7,6 +7,8 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
 	"sync"
 	"testing"
 	"time"
@@ -80,10 +82,25 @@ func TestChangeRequestsFromMongo(t *testing.T) {
 	errorCh := make(chan error, 1000)
 	defer close(errorCh)
 
+	meter := otel.Meter("mongo2s3.sync")
+	eventsCounter, err := meter.Int64Counter(
+		"mongo2s3.cdc.events",
+		metric.WithDescription("Change stream items processed"),
+	)
+	if err != nil {
+		t.Fatalf("failed to start events counter: %s", err)
+	}
+	writeBytesCounter, err := meter.Int64Counter(
+		"mongo2s3.cdc.write_bytes",
+		metric.WithDescription("Bytes writen to file"),
+	)
+	if err != nil {
+		t.Fatalf("failed to start events counter: %s", err)
+	}
 	wg := sync.WaitGroup{}
 	wg.Go(func() {
 		fmt.Println("Start SyncEvents")
-		if err := SyncEvents(ctx, config, client, []byte{}, collections[0], uploaderCh, errorCh); err != nil {
+		if err := SyncEvents(ctx, eventsCounter, writeBytesCounter, config, client, []byte{}, collections[0], uploaderCh, errorCh); err != nil {
 			errorCh <- err
 		}
 		fmt.Println("SyncEvents finished")

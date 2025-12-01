@@ -8,6 +8,8 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
 	"gopkg.in/yaml.v3"
 	"mongo2s3/internal"
 	"os"
@@ -70,6 +72,20 @@ func main() {
 		internal.Log.Error("error creating s3 provider: ", "error", err.Error())
 		os.Exit(5)
 		return
+	}
+
+	if config.OTEL_COLLECTOR_URL != "" {
+		otelShutdown, err := internal.SetupOTelSDK(ctx, config)
+		if err != nil {
+			internal.Log.Error("unable to init otel", "error", err.Error())
+			os.Exit(10)
+		}
+		defer func() {
+			oerr := otelShutdown(ctx)
+			if oerr != nil {
+				internal.Log.Error("unable to shutdown otel", "error", oerr.Error())
+			}
+		}()
 	}
 
 	// let's make sure we can write to s3 before we start syncing
@@ -205,6 +221,17 @@ func doErrorReload(config internal.Config, tracker *internal.DBCollectionFileTra
 func doFullLoad(config internal.Config, tracker *internal.DBCollectionFileTracker, ctx context.Context, mongoClient *mongo.Client, uploadProvider internal.UploadProvider, sigCh chan os.Signal,
 	cancel context.CancelFunc, filter bson.M) int {
 
+	meter := otel.Meter("mongo2s3.fullload")
+
+	writeBytesCounter, err := meter.Int64Counter(
+		"mongo2s3.cdc.write_bytes",
+		metric.WithDescription("Bytes writen to file"),
+	)
+	if err != nil {
+		internal.Log.Error("error getting items counter", "error", err.Error())
+		return 1
+	}
+
 	var wg sync.WaitGroup
 	var errWg sync.WaitGroup
 	errorCh := make(chan error, 100)
@@ -218,7 +245,7 @@ func doFullLoad(config internal.Config, tracker *internal.DBCollectionFileTracke
 
 		fullLoadWg.Go(func() {
 			internal.Log.Info("Starting full load for %s %s", coll.DB, coll.Name)
-			if syncErr := internal.FullLoad(ctx, config, mongoClient, coll, uploaderCh, specificErrorCh, filter); syncErr != nil {
+			if syncErr := internal.FullLoad(ctx, writeBytesCounter, config, mongoClient, coll, uploaderCh, specificErrorCh, filter); syncErr != nil {
 				internal.Log.Error("error while running a full load", "error: ", syncErr.Error(), "db", coll.DB, "collection", coll.Name)
 				specificErrorCh <- syncErr
 			}
@@ -305,6 +332,28 @@ func doCDC(config internal.Config, tracker *internal.DBCollectionFileTracker, ct
 	var wg sync.WaitGroup
 	var errWg sync.WaitGroup
 
+	meter := otel.Meter("mongo2s3.sync")
+	eventsCounter, err := meter.Int64Counter(
+		"mongo2s3.cdc.events",
+		metric.WithDescription("Change stream items processed"),
+	)
+	if err != nil {
+		internal.Log.Error("error getting items counter", "error", err.Error())
+		return
+	}
+	writeBytesCounter, err := meter.Int64Counter(
+		"mongo2s3.cdc.write_bytes",
+		metric.WithDescription("Bytes writen to file"),
+	)
+	if err != nil {
+		internal.Log.Error("error getting items counter", "error", err.Error())
+		return
+	}
+	if err != nil {
+		internal.Log.Error("error getting items counter", "error", err.Error())
+		return
+	}
+
 	errorCh := make(chan error, 100)
 	for _, _coll := range config.Collections {
 		coll := _coll
@@ -329,7 +378,7 @@ func doCDC(config internal.Config, tracker *internal.DBCollectionFileTracker, ct
 
 		wg.Go(func() {
 			internal.Log.Info("Starting sync", "db", coll.DB, "collection", coll.Name, "resumeToken", base64.URLEncoding.EncodeToString(resumeToken))
-			if syncErr := internal.SyncEvents(ctx, config, mongoClient, resumeToken, coll, uploaderCh, specificErrorCh); syncErr != nil {
+			if syncErr := internal.SyncEvents(ctx, eventsCounter, writeBytesCounter, config, mongoClient, resumeToken, coll, uploaderCh, specificErrorCh); syncErr != nil {
 				specificErrorCh <- syncErr
 			}
 			internal.Log.Info("Stopped sync", "db", coll.DB, "collection", coll.Name)

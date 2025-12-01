@@ -5,6 +5,7 @@ import (
 )
 
 type Config struct {
+	OTEL_COLLECTOR_URL     string            `yaml:"otel_collector_url"`
 	DB_URL                 string            `yaml:"db_url"`
 	MONGO_URL              string            `yaml:"mongo_url"`
 	LocalBaseDir           string            `yaml:"local_base_dir"`

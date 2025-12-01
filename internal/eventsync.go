@@ -10,6 +10,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"go.opentelemetry.io/otel/metric"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -22,7 +23,9 @@ import (
 //	on each event the data is written using json gzip to a temporary file.
 //	once the data reaches a thresh hold or time deadline, the file is rolled and the metadata file is sent to the s3 uploader
 //	a new file is started and new events will be written to this file
-func SyncEvents(context context.Context,
+func SyncEvents(ctx context.Context,
+	eventsCounter metric.Int64Counter,
+	bytesWrittenCounter metric.Int64Counter,
 	conf Config,
 	conn *mongo.Client,
 	resumeToken bson.Raw,
@@ -30,23 +33,30 @@ func SyncEvents(context context.Context,
 	uploaderCh chan<- string,
 	errorCh chan<- error) error {
 
+	ctx, span := Trace(ctx, "SyncEvents")
+	defer span.End()
+	span.AddEvent("connect to database")
 	db := conn.Database(collection.DB)
 	opts := options.ChangeStream()
 	opts = opts.SetFullDocument(options.UpdateLookup)
 
 	if resumeToken != nil && len(resumeToken) > 0 {
 		slog.Info("Setting up ResumeToken", "token", resumeToken)
+		span.AddEvent("resume token")
 		opts = opts.SetResumeAfter(resumeToken)
 	}
 	Log.Info("Starting Watch", "db", collection.DB, "collection", collection.Name)
-	cs, err := db.Collection(collection.Name).Watch(context, mongo.Pipeline{}, opts)
+	span.AddEvent(fmt.Sprintf("Starting Watch for %s %s", collection.DB, collection.Name))
+	cs, err := db.Collection(collection.Name).Watch(ctx, mongo.Pipeline{}, opts)
 
 	if err != nil {
+		span.RecordError(err)
 		return TraceErr(fmt.Errorf("error trying to watch collection : %s; %s", collection.Name, err))
 	}
 	defer func() {
-		err := cs.Close(context)
+		err := cs.Close(ctx)
 		if err != nil {
+			span.RecordError(err)
 			errorCh <- TraceErr(err)
 		}
 	}()
@@ -55,22 +65,26 @@ func SyncEvents(context context.Context,
 	var wg sync.WaitGroup
 
 	wg.Go(func() {
-		err1 := writeEvents(context, conf, collection, writerCh, uploaderCh)
+		err1 := writeEvents(ctx, bytesWrittenCounter, conf, collection, writerCh, uploaderCh)
 		if err1 != nil {
+			span.RecordError(err1)
 			errorCh <- TraceErr(err1)
 		}
 	})
 
-	for cs.Next(context) {
+	for cs.Next(ctx) {
 		if err := cs.Err(); err != nil {
+			span.RecordError(err)
 			errorCh <- TraceErr(err)
 		}
+		eventsCounter.Add(ctx, 1)
 		raw := cs.Current
 
 		event := ChangeEvent{}
-		err := bson.Unmarshal(raw, &event)
-		if err != nil {
-			errorCh <- TraceErr(err)
+		err1 := bson.Unmarshal(raw, &event)
+		if err1 != nil {
+			span.RecordError(err1)
+			errorCh <- TraceErr(err1)
 		}
 		//internal.Log.Info("Event Op Type: %s", event.OperationType)
 		if event.OperationType == "update" || event.OperationType == "insert" {
@@ -78,7 +92,7 @@ func SyncEvents(context context.Context,
 			writerCh <- &ChangeEventCombo{Event: &event, ResumeToken: cs.ResumeToken()}
 		}
 	}
-
+	span.AddEvent("Close writer")
 	close(writerCh)
 	wg.Wait()
 	return nil
@@ -86,10 +100,14 @@ func SyncEvents(context context.Context,
 
 func writeEvents(
 	ctx context.Context,
+	bytesWrittenCounter metric.Int64Counter,
 	conf Config,
 	collection MongoCollection,
 	chevents <-chan *ChangeEventCombo,
 	uploadCh chan<- string) error {
+
+	ctx, span := Trace(ctx, "writeEvents")
+	defer span.End()
 
 	timer := time.NewTimer(conf.FileWriteTimeoutSecond)
 	defer timer.Stop()
@@ -109,9 +127,11 @@ func writeEvents(
 	defer func() {
 		// ensure we clean up the temp file if still around
 		if rollingFile != nil {
+			span.AddEvent("rolling file close")
 			err := rollingFile.Close()
 
 			if err != nil {
+				span.RecordError(err)
 				Log.Error("error closing rolling file on defer", "error", TraceErr(err).Error())
 			}
 			rollingFile.Delete()
@@ -127,8 +147,9 @@ func writeEvents(
 		case <-ctx.Done():
 			// context is done, we should bail
 			if bytesWritten {
-				rollingFile, err = RollFile(rollingFile, conf, collection, resumeToken, mongoEndId, uploadCh)
+				rollingFile, err = RollFile(ctx, rollingFile, conf, collection, resumeToken, mongoEndId, uploadCh)
 				if err != nil {
+					span.RecordError(err)
 					return TraceErr(err)
 				}
 				bytesWritten = false
@@ -139,8 +160,9 @@ func writeEvents(
 				// the channel is closed, we should finish up and return
 				Log.Info("events channel closed")
 				if bytesWritten {
-					rollingFile, err = RollFile(rollingFile, conf, collection, resumeToken, mongoEndId, uploadCh)
+					rollingFile, err = RollFile(ctx, rollingFile, conf, collection, resumeToken, mongoEndId, uploadCh)
 					if err != nil {
+						span.RecordError(err)
 						return TraceErr(err)
 					}
 					bytesWritten = false
@@ -161,17 +183,20 @@ func writeEvents(
 				rollingFile.StartToken = resumeToken
 			}
 
-			err = writeToFile(rollingFile.Writer, event, newLine)
+			err = writeToFile(ctx, bytesWrittenCounter, rollingFile.Writer, event, newLine)
 			if err != nil {
+				span.RecordError(err)
 				return TraceErr(err)
 			}
 			bytesWritten = true
 		case <-sizeCheckTicker.C:
 			// time to check file size
 			if bytesWritten && isSizeThresholdReached(rollingFile, conf) {
+				span.AddEvent("file size reached")
 				Log.Info("rolling file because size threshold reached ", "file", rollingFile.FileName)
-				rollingFile, err = RollFile(rollingFile, conf, collection, resumeToken, mongoEndId, uploadCh)
+				rollingFile, err = RollFile(ctx, rollingFile, conf, collection, resumeToken, mongoEndId, uploadCh)
 				if err != nil {
+					span.RecordError(err)
 					return TraceErr(err)
 				}
 				bytesWritten = false
@@ -179,10 +204,12 @@ func writeEvents(
 		case <-timer.C:
 			// write to file timeout, we need to roll if any data
 			if bytesWritten {
+				span.AddEvent("time threshold reached")
 				Log.Info("rolling file because time threshold reached ", "file", rollingFile.FileName)
 
-				rollingFile, err = RollFile(rollingFile, conf, collection, resumeToken, mongoEndId, uploadCh)
+				rollingFile, err = RollFile(ctx, rollingFile, conf, collection, resumeToken, mongoEndId, uploadCh)
 				if err != nil {
+					span.RecordError(err)
 					return TraceErr(err)
 				}
 				bytesWritten = false
@@ -208,11 +235,12 @@ func isSizeThresholdReached(rollingFile *RollingFile, conf Config) bool {
 }
 
 // writeToFile writes the event marshalled as json to the writer + a newline.
-func writeToFile(writer *gzip.Writer, event *ChangeEvent, newLine []byte) error {
+func writeToFile(ctx context.Context, counter metric.Int64Counter, writer *gzip.Writer, event *ChangeEvent, newLine []byte) error {
 	bts, err := bson.MarshalExtJSON(event.FullDocument, false, true)
 	if err != nil {
 		return err
 	}
+	counter.Add(ctx, int64(len(bts)+len(newLine)))
 	_, err = writer.Write(bts)
 	if err != nil {
 		return err
@@ -226,19 +254,24 @@ func writeToFile(writer *gzip.Writer, event *ChangeEvent, newLine []byte) error 
 
 // RollFile forces the current rollingFile object to close, the moveFile is called which will move the file to its final name
 // and a new rollingFile struct is created
-func RollFile(rollingFile *RollingFile, conf Config, collection MongoCollection, resumeToken bson.Raw, endMongoId string, uploadCh chan<- string) (*RollingFile, error) {
+func RollFile(ctx context.Context, rollingFile *RollingFile, conf Config, collection MongoCollection, resumeToken bson.Raw, endMongoId string, uploadCh chan<- string) (*RollingFile, error) {
 	// close and roll
+	ctx, span := Trace(ctx, "RollFile")
+	defer span.End()
 	err := rollingFile.Close()
 	if err != nil {
+		span.RecordError(err)
 		Log.Error("error closing file", "file", rollingFile.FileName, "error", err.Error())
 		return nil, TraceErr(err)
 	}
 	movedFile, err := moveFile(conf, collection, rollingFile.FileName)
 	if err != nil {
+		span.RecordError(err)
 		return nil, TraceErr(err)
 	}
 	metaFile, err := os.Create(fmt.Sprintf("%s.meta", movedFile))
 	if err != nil {
+		span.RecordError(err)
 		return nil, TraceErr(err)
 	}
 
@@ -255,14 +288,17 @@ func RollFile(rollingFile *RollingFile, conf Config, collection MongoCollection,
 
 	bts, err := json.Marshal(uploadfileName)
 	if err != nil {
+		span.RecordError(err)
 		return nil, TraceErr(err)
 	}
 	_, err = metaFile.Write(bts)
 	if err != nil {
+		span.RecordError(err)
 		return nil, TraceErr(err)
 	}
 	err = metaFile.Close()
 	if err != nil {
+		span.RecordError(err)
 		return nil, TraceErr(err)
 	}
 
@@ -271,6 +307,7 @@ func RollFile(rollingFile *RollingFile, conf Config, collection MongoCollection,
 
 	rollingFile, err = NewRollingFile(conf, collection)
 	if err != nil {
+		span.RecordError(err)
 		return nil, TraceErr(err)
 	}
 	return rollingFile, nil
@@ -352,7 +389,9 @@ func NewRollingFile(conf Config, collection MongoCollection) (*RollingFile, erro
 	}, nil
 }
 
-func FullLoad(ctx context.Context, conf Config, conn *mongo.Client, collection MongoCollection, uploaderCh chan string, errorCh chan error, filter bson.M) error {
+func FullLoad(ctx context.Context,
+	bytesWrittenCounter metric.Int64Counter,
+	conf Config, conn *mongo.Client, collection MongoCollection, uploaderCh chan string, errorCh chan error, filter bson.M) error {
 	db := conn.Database(collection.DB)
 
 	cs, err := db.Collection(collection.Name).Find(ctx, filter)
@@ -372,7 +411,7 @@ func FullLoad(ctx context.Context, conf Config, conn *mongo.Client, collection M
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		err := writeEvents(ctx, conf, collection, writerCh, uploaderCh)
+		err := writeEvents(ctx, bytesWrittenCounter, conf, collection, writerCh, uploaderCh)
 		if err != nil {
 			errorCh <- TraceErr(err)
 		}
