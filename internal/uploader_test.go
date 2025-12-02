@@ -81,12 +81,8 @@ func TestFileUploadToS3(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
-		err := db.Connection.Close(ctx)
-		if err != nil {
-			fmt.Println(err)
-		}
-	}()
+	defer db.Close(ctx)
+	
 	err = RunMigrations(db, ctx)
 	if err != nil {
 		t.Fatal(err)

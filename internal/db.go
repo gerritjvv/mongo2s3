@@ -6,21 +6,40 @@ import (
 	"errors"
 	"fmt"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
 
 type DB struct {
-	Connection *pgx.Conn
+	Pool *pgxpool.Pool
+}
+
+func (db *DB) Exec(ctx context.Context, query string, args ...any) (pgconn.CommandTag, error) {
+	return db.Pool.Exec(ctx, query, args...)
+}
+
+func (db *DB) Query(ctx context.Context, query string, args ...any) (pgx.Rows, error) {
+	return db.Pool.Query(ctx, query, args...)
+}
+
+func (db *DB) QueryRow(ctx context.Context, s string, db2 string, collection string) pgx.Row {
+	return db.Pool.QueryRow(ctx, s, db2, collection)
+}
+
+func (db *DB) Close(ctx context.Context) {
+	db.Pool.Close()
 }
 
 func NewDBConnect(conf Config) (*DB, error) {
-	conn, err := pgx.Connect(context.Background(), conf.DB_URL)
+	pool, err := pgxpool.New(context.Background(), conf.DB_URL)
+
 	if err != nil {
 		return nil, TraceErr(err)
 	}
-	return &DB{Connection: conn}, nil
+	return &DB{Pool: pool}, nil
 }
 
 func RunMigrations(db *DB, ctx context.Context) error {
@@ -36,7 +55,7 @@ func RunMigrations(db *DB, ctx context.Context) error {
 		}
 
 		Log.Info("found migration file", "file", e.Name())
-		_, execErr := db.Connection.Exec(ctx, string(contents))
+		_, execErr := db.Exec(ctx, string(contents))
 		if execErr != nil {
 			return fmt.Errorf("migration %s failed: %w", e.Name(), execErr)
 		}
@@ -50,7 +69,7 @@ type DBCollectionFileTracker struct {
 }
 
 func (t *DBCollectionFileTracker) GetErroringFiles(context context.Context) ([]CollectionFileTrackingRecord, error) {
-	rows, err := t.DB.Connection.Query(context, `
+	rows, err := t.DB.Query(context, `
 	select db,
     collection,
     remote_file,
@@ -82,7 +101,7 @@ func (t *DBCollectionFileTracker) GetErroringFiles(context context.Context) ([]C
 }
 
 func (t *DBCollectionFileTracker) UpdateFileStatus(context context.Context, record CollectionFileTrackingRecord) error {
-	_, err := t.DB.Connection.Exec(context,
+	_, err := t.DB.Exec(context,
 		`
 INSERT INTO sync_file_tracking (
     db,
@@ -121,7 +140,7 @@ DO UPDATE SET
 }
 
 func (t *DBCollectionFileTracker) GetLastUpload(context context.Context, db string, collection string) (record *CollectionFileTrackingRecord, found bool, err error) {
-	row := t.DB.Connection.QueryRow(context, `
+	row := t.DB.QueryRow(context, `
 	select db,
     collection,
     remote_file,

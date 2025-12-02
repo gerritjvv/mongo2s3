@@ -104,12 +104,8 @@ func main() {
 		os.Exit(6)
 		return
 	}
-	defer func() {
-		closeErr := db.Connection.Close(ctx)
-		if closeErr != nil {
-			internal.Log.Error("error closing sync's postgres connection", "error: ", closeErr.Error())
-		}
-	}()
+	defer db.Close(ctx)
+
 	err = internal.RunMigrations(db, ctx)
 	if err != nil {
 		internal.Log.Error("error while running migrations to sync's postgres", "error: ", err.Error())
@@ -132,12 +128,8 @@ func main() {
 				os.Exit(6)
 				return
 			}
-			defer func() {
-				closeErr := db2.Connection.Close(ctx)
-				if closeErr != nil {
-					internal.Log.Error("error closing sync's postgres connection", "error: ", closeErr.Error())
-				}
-			}()
+			defer db2.Close(ctx)
+			
 			tracker2 := &internal.DBCollectionFileTracker{DB: db2}
 
 			wg.Go(func() {
