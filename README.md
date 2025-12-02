@@ -20,6 +20,12 @@ CDC sync is the default, and run full load, you should pass in the --full-load f
 
 When starting sync for the first time, run the CDC mode, and then run the full load modes separately once.
 
+## Docker Images
+
+Each merge to the master branch builds out docker images. These are hosted by github.
+Check out this page: https://github.com/gerritjvv/mongo2s3/pkgs/container/mongo2s3
+
+If you want the binaries then run `./build.sh build` or peek at the build file and copy and run the individual command for your platform.
 # Deploy and Requirements
 
 This app requires a postgres database for tracking the files and of course a MongoDB slave to pull against. Do not
