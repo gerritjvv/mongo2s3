@@ -1,0 +1,103 @@
+# Default values for mongo2s3.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+image:
+  repository: ghcr.io/gerritjvv/mongo2s3
+  name: mongo2s3
+  pullPolicy: IfNotPresent
+  tag: "09e63bd"
+
+# to disable set env: {}
+env:
+  - name: CONFIG_FILE
+    value: /etc/mongo2s3/config.yaml
+  - name: GOMAXPROCS
+    value: "4"
+  - name: GOMEMLIMIT
+    value: "1800MiB"
+
+imagePullSecrets: [ ]
+nameOverride: ""
+fullnameOverride: ""
+
+podAnnotations: { }
+podLabels: { }
+
+podSecurityContext: { }
+# fsGroup: 2000
+
+securityContext:
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+  allowPrivilegeEscalation: false
+  seccompProfile:
+    type: RuntimeDefault
+
+resources:
+  limits:
+    memory: 5Gi
+  requests:
+    cpu: "4"
+    memory: 521Mi
+
+# persistent_volume_enabled: true
+volumes:
+  - name: workdir
+    emptyDir: {}
+#    persistentVolumeClaim:
+#      claimName: mongo2s3-workdir
+  - name: config
+    secret:
+      secretName: mongo2s3-config
+
+volumeMounts:
+  - name: workdir
+    mountPath: /work
+  - name: config
+    mountPath: /etc/mongo2s3/config.yaml
+    subPath: config.yaml
+    readOnly: true
+
+
+config_file: /etc/mongo2s3/config.yaml
+
+config:
+  db_url: "postgres://myuser:mypass@postgres:5432/mydb?sslmode=disable"
+  mongo_url: "mongodb://mongodb.mongo2s3.orb.local:27017"
+  local_base_dir: "/work/"
+
+  s3_bucket: "test"
+  s3_region: "us-east-1"
+  s3_prefix: "/data"
+
+  file_write_timeout_second: "10s"
+  file_write_size_bytes: 1048576
+
+  collections:
+    - db: "test"
+      name: "users"
+    - db: "test"
+      name: "test"
+
+postgres:
+  enabled: true # true to deploy local postgres
+
+  image:
+    repository: postgres
+    tag: "17"
+
+  auth:
+    # use secret instead of value provided passwords
+    # secretName: ""
+    username: mongo2s3
+    password: mongo2s3
+    database: mongo2s3
+
+  persistence:
+    enabled: true
+    size: 20Gi

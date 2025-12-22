@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mongo2s3-config
+stringData:
+  config.yaml: |
+    db_url: {{ .Values.config.db_url | required "need config.db_url" | quote }}
+    mongo_url: {{ .Values.config.mongo_url | required "need config.mongo_url" | quote }}
+    local_base_dir: {{ .Values.config.local_base_dir | required "need config.local_base_dir" | quote }}
+
+    s3_bucket: {{ .Values.config.s3_bucket | required "need config.s3_bucket" | quote }}
+    s3_region: {{ .Values.config.s3_region | required "need config.s3_region" | quote }}
+    s3_prefix: {{ .Values.config.s3_prefix | required "need config.s3_prefix" | quote }}
+
+    file_write_timeout_second: {{ .Values.config.file_write_timeout_second | default "10s" | quote }}
+    file_write_size_bytes: {{ .Values.config.file_write_size_bytes | default 1048576 | int64 }}
+
+    collections:
+{{ .Values.config.collections | toYaml | indent 6 }}

@@ -58,7 +58,7 @@ collections:
     name: "test"
 ```
 
-Try to split instances of this app between big collectio and clumping together smaller collections in a single instance.
+Try to split instances of this app between big collection and clumping together smaller collections in a single instance.
 If you have highvolume very time sensitive collections put each in their own instance (Pod, Task).
 
 A file write timeout of 1-5 minutes and a file size bytes of 128-256mb are normally good values for raw ingestion files.

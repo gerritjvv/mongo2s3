@@ -1,0 +1,132 @@
+{{- if .Values.postgres.enabled }}
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: syncpostgres
+  labels:
+    app.kubernetes.io/name: syncpostgres
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  serviceName: syncpostgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: syncpostgres
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: syncpostgres
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: {{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+          {{- if .Values.postgres.auth.secretName }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgres.auth.secretName }}
+                  key: username
+          {{- else }}
+              value: {{ .Values.postgres.auth.username | quote }}
+          {{- end }}
+
+            - name: POSTGRES_PASSWORD
+          {{- if .Values.postgres.auth.secretName }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgres.auth.secretName }}
+                  key: password
+          {{- else }}
+              value: {{ .Values.postgres.auth.password | quote }}
+          {{- end }}
+
+            - name: POSTGRES_DB
+          {{- if .Values.postgres.auth.secretName }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgres.auth.secretName }}
+                  key: database
+          {{- else }}
+              value: {{ .Values.postgres.auth.database | quote }}
+          {{- end }}
+
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - pg_isready -U "$POSTGRES_USER"
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - pg_isready -U "$POSTGRES_USER"
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.postgres.resources | nindent 12 }}
+
+{{- if .Values.postgres.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: {{ .Values.postgres.persistence.size }}
+{{- else }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: syncpostgres
+  labels:
+    app.kubernetes.io/name: syncpostgres
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  ports:
+    - port: 5432
+      targetPort: postgres
+      name: postgres
+  selector:
+    app.kubernetes.io/name: syncpostgres
+    app.kubernetes.io/instance: {{ .Release.Name }}
+
+{{- end }}
