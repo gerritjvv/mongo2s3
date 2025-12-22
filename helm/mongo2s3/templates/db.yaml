@@ -22,9 +22,11 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
-        fsGroup: 999
-        seccompProfile:
-          type: RuntimeDefault
+{{- if not .Values.postgres.persistence.enabled }}
+      volumes:
+        - name: data
+          emptyDir: {}
+{{- end }}
       containers:
         - name: postgres
           image: {{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}
@@ -101,16 +103,6 @@ spec:
         resources:
           requests:
             storage: {{ .Values.postgres.persistence.size }}
-{{- else }}
-  volumeClaimTemplates:
-    - metadata:
-        name: data
-      spec:
-        accessModes:
-          - ReadWriteOnce
-        resources:
-          requests:
-            storage: 1Gi
 {{- end }}
 ---
 apiVersion: v1

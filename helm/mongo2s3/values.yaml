@@ -84,12 +84,12 @@ config:
     - db: "test"
       name: "test"
 
+
 postgres:
   enabled: true # true to deploy local postgres
-
   image:
-    repository: postgres
-    tag: "17"
+    repository: bitnami/postgresql
+    tag: "latest"
 
   auth:
     # use secret instead of value provided passwords
@@ -99,5 +99,5 @@ postgres:
     database: mongo2s3
 
   persistence:
-    enabled: true
+    enabled: false
     size: 20Gi
