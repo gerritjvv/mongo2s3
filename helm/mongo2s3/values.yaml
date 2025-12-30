@@ -2,6 +2,11 @@
 # This is a YAML-formatted file.
 # Declare variables to be passed into your templates.
 
+## enable deub to get a shell, the mongo2s3 will not run and we'll activate a while loop so the container stays live.
+## You'll need to ssh into the pod and can run the binary manually.
+## This is also a good way to run the bulk loads
+debug: true
+
 image:
   repository: ghcr.io/gerritjvv/mongo2s3
   name: mongo2s3
@@ -16,6 +21,11 @@ env:
     value: "4"
   - name: GOMEMLIMIT
     value: "1800MiB"
+  - name: AWS_EC2_METADATA_DISABLED
+    value: "true"
+
+# pull in S3 or Seaweed credentials as secrets
+# secretEnv: "mongo2s3-env"
 
 imagePullSecrets: [ ]
 nameOverride: ""
@@ -79,9 +89,7 @@ config:
   file_write_size_bytes: 1048576
 
   collections:
-    - db: "test"
-      name: "users"
-    - db: "test"
+    - db: "db"
       name: "test"
 
 

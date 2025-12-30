@@ -119,7 +119,7 @@ func writeEvents(
 	var mongoEndId string
 
 	var err error
-	newLine := []byte("")
+	newLine := []byte("\n")
 	rollingFile, err := NewRollingFile(conf, collection)
 	if err != nil {
 		return TraceErr(err)
