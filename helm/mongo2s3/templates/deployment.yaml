@@ -28,8 +28,9 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
+        -
         {{- if .Values.debug }}
-        - command: ["/bin/sh", "-c"]
+          command: ["/bin/sh", "-c"]
           args:
             - |
               echo "Debug mode"
