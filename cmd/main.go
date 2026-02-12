@@ -67,7 +67,7 @@ func main() {
 		}
 	}()
 
-	uploadProvider, err := internal.NewS3Provider(ctx, config.S3Bucket)
+	uploadProvider, err := internal.NewS3Provider(ctx, config.S3Bucket, config.S3Prefix)
 	if err != nil {
 		internal.Log.Error("error creating s3 provider: ", "error", err.Error())
 		os.Exit(5)

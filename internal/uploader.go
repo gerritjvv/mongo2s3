@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"time"
 )
@@ -20,24 +21,32 @@ type UploadProvider interface {
 type S3Provider struct {
 	S3Client *s3.Client
 	Bucket   string
+	Prefix   string
 }
 
 func (p *S3Provider) UploadFile(context context.Context, reader io.Reader, remoteKey string) error {
+
+	fullRemoteKey := remoteKey
+	if p.Prefix != "" {
+		fullRemoteKey = fmt.Sprintf("%s/%s", p.Prefix, remoteKey)
+	}
+	fullRemoteKey = path.Clean(fullRemoteKey) // remove double slashes
+
 	outPut, err := p.S3Client.PutObject(context, &s3.PutObjectInput{
 		Bucket: aws.String(p.Bucket),
-		Key:    aws.String(remoteKey),
+		Key:    aws.String(fullRemoteKey),
 		Body:   reader,
 	})
 	if err != nil {
-		Log.Info("Failed Uploading file to S3", "remoteKey", remoteKey, "bucket", p.Bucket, "error", err.Error())
+		Log.Info("Failed Uploading file to S3", "remoteKey", fullRemoteKey, "bucket", p.Bucket, "error", err.Error())
 	} else {
-		Log.Info("Uploading file to S3", "remoteKey", remoteKey, "bucket", p.Bucket, "size", outPut.Size)
+		Log.Info("Uploading file to S3", "remoteKey", fullRemoteKey, "bucket", p.Bucket, "size", outPut.Size)
 	}
 
 	return err
 }
 
-func NewS3Provider(ctx context.Context, bucket string) (UploadProvider, error) {
+func NewS3Provider(ctx context.Context, bucket string, prefix string) (UploadProvider, error) {
 	endpoint := os.Getenv("S3_ENDPOINT")
 	accessKey := os.Getenv("S3_ACCESS_KEY")
 	secretKey := os.Getenv("S3_SECRET_KEY")
@@ -68,6 +77,7 @@ func NewS3Provider(ctx context.Context, bucket string) (UploadProvider, error) {
 		return &S3Provider{
 			S3Client: client,
 			Bucket:   bucket,
+			Prefix:   prefix,
 		}, nil
 	}
 
@@ -79,6 +89,7 @@ func NewS3Provider(ctx context.Context, bucket string) (UploadProvider, error) {
 	return &S3Provider{
 		S3Client: client,
 		Bucket:   bucket,
+		Prefix:   prefix,
 	}, nil
 }
 
