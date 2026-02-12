@@ -129,7 +129,7 @@ func main() {
 				return
 			}
 			defer db2.Close(ctx)
-			
+
 			tracker2 := &internal.DBCollectionFileTracker{DB: db2}
 
 			wg.Go(func() {
@@ -251,7 +251,7 @@ func doFullLoad(config internal.Config, tracker *internal.DBCollectionFileTracke
 			if uploadError != nil {
 				specificErrorCh <- uploadError
 			}
-			internal.Log.Info("Sopped sync for %s %s", coll.DB, coll.Name)
+			internal.Log.Info("Stopped sync for %s %s", coll.DB, coll.Name)
 		})
 
 		wg.Go(func() {

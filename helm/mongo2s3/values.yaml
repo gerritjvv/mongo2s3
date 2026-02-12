@@ -5,7 +5,8 @@
 ## enable deub to get a shell, the mongo2s3 will not run and we'll activate a while loop so the container stays live.
 ## You'll need to ssh into the pod and can run the binary manually.
 ## This is also a good way to run the bulk loads
-debug: true
+debug: false
+fullloadpod: true
 
 image:
   repository: ghcr.io/gerritjvv/mongo2s3

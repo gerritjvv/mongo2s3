@@ -98,6 +98,28 @@ func SyncEvents(ctx context.Context,
 	return nil
 }
 
+func getId(doc bson.M) (string, error) {
+
+	idobj, ok := doc["_id"]
+	if !ok {
+		idobj, ok = doc["id"]
+		if !ok {
+			return "", errors.New("No _id or id present in document")
+		}
+	}
+
+	switch id := idobj.(type) {
+	case nil:
+		return "", errors.New("no id is present in the document")
+	case bson.ObjectID:
+		return id.Hex(), nil
+	case string:
+		return id, nil
+	}
+
+	return "", errors.New(fmt.Sprintf("%s %T is not a recognised id for mongo2s3 sync", idobj, idobj))
+}
+
 func writeEvents(
 	ctx context.Context,
 	bytesWrittenCounter metric.Int64Counter,
@@ -175,7 +197,11 @@ func writeEvents(
 
 			event := eventCombo.Event
 			resumeToken = eventCombo.ResumeToken
-			idHex := event.FullDocument["_id"].(bson.ObjectID).Hex()
+			idHex, err := getId(event.FullDocument)
+			if err != nil {
+				Log.Info("error retreiving id %s %s", err.Error(), event.FullDocument)
+				continue
+			}
 			mongoEndId = idHex
 
 			if !bytesWritten {
@@ -424,7 +450,11 @@ func FullLoad(ctx context.Context,
 		raw := cs.Current
 
 		var fullDoc bson.M
-		_ = bson.Unmarshal(raw, &fullDoc)
+		err = bson.Unmarshal(raw, &fullDoc)
+		if err != nil {
+			errorCh <- TraceErr(err)
+			continue
+		}
 		ev := &ChangeEvent{
 			OperationType: "",
 			FullDocument:  fullDoc,
