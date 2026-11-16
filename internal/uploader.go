@@ -138,7 +138,8 @@ func processFileToUpload(ctx context.Context, provider UploadProvider, tracker C
 
 	t := time.Unix(0, metaFileData.Nanos).UTC()
 	if metaFileData.StartMongoId != "" && fullLoad {
-		t, err = ObjectIDTimestamp(metaFileData.StartMongoId)
+		// use the last id in the file so we get latest data in the earliest partitions
+		t, err = ObjectIDTimestamp(metaFileData.EndMongoId)
 		if err != nil {
 			return err
 		}
