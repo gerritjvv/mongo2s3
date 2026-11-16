@@ -99,6 +99,7 @@ func NewS3Provider(ctx context.Context, bucket string, prefix string) (UploadPro
 func ProcessUploadingFilesFromChannel(context context.Context,
 	provider UploadProvider,
 	tracker CollectionFileTracker,
+	useIdsForFileTimestamp bool,
 	uploadch <-chan string,
 	errorch chan<- error) error {
 
@@ -118,7 +119,7 @@ func ProcessUploadingFilesFromChannel(context context.Context,
 			}
 			// check if file exists
 			Log.Info("Processing upload for metadata file", "file", localFile)
-			err := processFileToUpload(context, provider, tracker, localFile, errorch)
+			err := processFileToUpload(context, provider, tracker, localFile, useIdsForFileTimestamp, errorch)
 			Log.Info("completed upload for metadata file", "file", localFile)
 			if err != nil {
 				Log.Error("Uploading failed for metadata file", "file", localFile, "error", err.Error())
@@ -128,7 +129,7 @@ func ProcessUploadingFilesFromChannel(context context.Context,
 	}
 }
 
-func processFileToUpload(ctx context.Context, provider UploadProvider, tracker CollectionFileTracker, metaDataFileName string, errorCh chan<- error) error {
+func processFileToUpload(ctx context.Context, provider UploadProvider, tracker CollectionFileTracker, metaDataFileName string, fullLoad bool, errorCh chan<- error) error {
 	metaFileData, err := ParseUploadFileName(metaDataFileName)
 	if err != nil {
 		Log.Error("Cannot read metadata file for upload", "file", metaDataFileName, "error", err.Error())
@@ -136,7 +137,7 @@ func processFileToUpload(ctx context.Context, provider UploadProvider, tracker C
 	}
 
 	t := time.Unix(0, metaFileData.Nanos).UTC()
-	if metaFileData.StartMongoId != "" {
+	if metaFileData.StartMongoId != "" && fullLoad {
 		t, err = ObjectIDTimestamp(metaFileData.StartMongoId)
 		if err != nil {
 			return err

@@ -108,6 +108,7 @@ func TestFileUploadToS3(t *testing.T) {
 			testDoneCtx,
 			provider,
 			tracker,
+			true,
 			uploadch,
 			errorch,
 		)

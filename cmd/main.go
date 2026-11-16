@@ -261,7 +261,10 @@ func doFullLoad(config internal.Config,
 
 		uploadWg.Go(func() {
 			internal.Log.Info("Starting upload for %s %s", coll.DB, coll.Name)
-			uploadError := internal.ProcessUploadingFilesFromChannel(ctx, uploadProvider, tracker, uploaderCh, specificErrorCh)
+			// for backloading we want to evenly distribute all the records based on their creation time, which the nearest and best way is to use
+			// the mongo id. Ids are almost always generated with the object creation.
+			// For the continuous cdc you want the file upload time.
+			uploadError := internal.ProcessUploadingFilesFromChannel(ctx, uploadProvider, tracker, true, uploaderCh, specificErrorCh)
 			if uploadError != nil {
 				specificErrorCh <- uploadError
 			}
@@ -436,7 +439,9 @@ func doCDC(config internal.Config, tracker *internal.DBCollectionFileTracker, ct
 		wg.Go(func() {
 			defer collectionWg.Done()
 			internal.Log.Info("Starting uploads", "db", coll.DB, "collection", coll.Name)
-			uploadError := internal.ProcessUploadingFilesFromChannel(ctx, uploadProvider, tracker, uploaderCh, specificErrorCh)
+			// important, for CDC we want to upload changes to data using the "now" timestamps. This is to allow continuous merge
+			// processes to only look back at the last N partitions, rather than everywhere in the partition tree.
+			uploadError := internal.ProcessUploadingFilesFromChannel(ctx, uploadProvider, tracker, false, uploaderCh, specificErrorCh)
 			if uploadError != nil {
 				specificErrorCh <- uploadError
 			}
