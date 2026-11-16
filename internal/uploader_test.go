@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
 	"github.com/docker/go-connections/nat"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
+	"go.mongodb.org/mongo-driver/v2/bson"
+
 	"io"
 	"os"
 	"sync"
@@ -82,7 +85,7 @@ func TestFileUploadToS3(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close(ctx)
-	
+
 	err = RunMigrations(db, ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -132,6 +135,8 @@ func TestFileUploadToS3(t *testing.T) {
 		Nanos:          time.Now().UnixNano(),
 		ResumeTokenB64: "test",
 		StartTokenB64:  "test",
+		StartMongoId:   bson.NewObjectID().Hex(),
+		EndMongoId:     bson.NewObjectID().Hex(),
 	}
 
 	jsonBytes, err := json.Marshal(metaFileData)

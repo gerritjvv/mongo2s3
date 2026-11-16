@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"go.mongodb.org/mongo-driver/v2/bson"
 	"os"
+	"time"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 type CollectionFileTrackingRecord struct {
@@ -43,11 +45,11 @@ type ChangeEventCombo struct {
 }
 
 type UploadFileName struct {
-	DB             string `bson:"db"`
+	DB             string `bson:"db" json:"db"`
 	Collection     string `json:"collection"`
 	SourceFileName string `json:"source_file_name"`
-	StartMongoId   string `bson:"start_mongo_id"`
-	EndMongoId     string `bson:"end_mongo_id"`
+	StartMongoId   string `bson:"start_mongo_id" json:"start_mongo_id"`
+	EndMongoId     string `bson:"end_mongo_id" json:"end_mongo_id"`
 	Nanos          int64  `json:"nanos"`
 	ResumeTokenB64 string `json:"resume_token"`
 	StartTokenB64  string `json:"start_token"`
@@ -64,6 +66,15 @@ func ParseUploadFileName(metaDataFile string) (*UploadFileName, error) {
 		return nil, err
 	}
 	uploadFileName := UploadFileName{}
-	json.Unmarshal(bts, &uploadFileName)
-	return &uploadFileName, nil
+	err = json.Unmarshal(bts, &uploadFileName)
+	return &uploadFileName, err
+}
+
+func ObjectIDTimestamp(id string) (time.Time, error) {
+	oid, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	return oid.Timestamp().UTC(), nil
 }

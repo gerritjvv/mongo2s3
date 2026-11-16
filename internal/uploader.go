@@ -3,15 +3,16 @@ package internal
 import (
 	"context"
 	"fmt"
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"io"
 	"os"
 	"path"
 	"path/filepath"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 type UploadProvider interface {
@@ -133,7 +134,16 @@ func processFileToUpload(ctx context.Context, provider UploadProvider, tracker C
 		Log.Error("Cannot read metadata file for upload", "file", metaDataFileName, "error", err.Error())
 		return err
 	}
-	t := time.Unix(0, metaFileData.Nanos)
+
+	t := time.Unix(0, metaFileData.Nanos).UTC()
+	if metaFileData.StartMongoId != "" {
+		t, err = ObjectIDTimestamp(metaFileData.StartMongoId)
+		if err != nil {
+			return err
+		}
+	}
+
+	// get the file date from the first record in the file
 	remoteFile := fmt.Sprintf("%s/%s/%s/%s",
 		metaFileData.DB,
 		metaFileData.Collection,
