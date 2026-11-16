@@ -1,0 +1,47 @@
+# mongo2s3 GitLab CI
+# Same pattern/template as the trdpanel .gitlab-ci.yml (kaniko build pushing
+# to hub.widitrade.com registry).
+# Go builds inside Docker (multi-stage Dockerfile), so there is no separate
+# compile stage like build-symfony.
+
+stages:
+  - build-image
+
+default:
+  tags:
+    - dtic-runner-1x
+
+variables:
+  CI_REGISTRY_NAME: hub.widitrade.com
+  CI_REGISTRY_MONGO2S3_NAME: $CI_REGISTRY_NAME/mongo2s3
+  DOCKER_CONFIG: /kaniko/.docker/
+  DOCKER_AUTH: '{"auths":{"$CI_REGISTRY_NAME":{"username":"$CI_JOB_DTIC_USER","password":"$CI_JOB_DTIC_TOKEN"}}}'
+  DESTINATION_IMAGE_NAME: $CI_COMMIT_REF_SLUG-$CI_COMMIT_SHA
+  IMAGE_LATEST_TAG: latest
+
+#################
+## BUILD IMAGE ##
+#################
+
+# TEMPLATE MONGO2S3
+# -------------------------
+.build_mongo2s3_image_template: &build_mongo2s3_image_template
+  stage: build-image
+  image:
+    name: binbash/kaniko:1.9.0
+    entrypoint: [ "" ]
+  script:
+    - echo "Building image from $DESTINATION_IMAGE_NAME"
+    - echo "Pipeline $CI_PIPELINE_URL"
+    - echo "$DOCKER_AUTH" > $DOCKER_CONFIG/config.json
+    - /kaniko/executor --context=$CI_PROJECT_DIR --dockerfile=$CI_PROJECT_DIR/Dockerfile --destination=$CI_REGISTRY_MONGO2S3_NAME:$DESTINATION_IMAGE_NAME --destination=$CI_REGISTRY_MONGO2S3_NAME:$IMAGE_LATEST_TAG
+  rules:
+    - if: $CI_COMMIT_BRANCH == "master"
+      when: always
+    - if: $CI_COMMIT_BRANCH != "master"
+      when: manual
+
+# BUILD MONGO2S3
+# ------------------------
+build-mongo2s3-image:
+  <<: *build_mongo2s3_image_template
