@@ -5,19 +5,21 @@ import (
 	"encoding/base64"
 	"flag"
 	"fmt"
+	"mongo2s3/internal"
+	"os"
+	"os/signal"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"time"
+
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 	"gopkg.in/yaml.v3"
-	"mongo2s3/internal"
-	"os"
-	"os/signal"
-	"strings"
-	"sync"
-	"syscall"
-	"time"
 )
 
 func main() {
@@ -116,7 +118,7 @@ func main() {
 	tracker := &internal.DBCollectionFileTracker{DB: db}
 
 	if *fullLoad {
-		exitCode := doFullLoad(config, tracker, ctx, mongoClient, uploadProvider, sigCh, cancel, bson.M{})
+		exitCode := doFullLoad(config, tracker, ctx, config.Collections, mongoClient, uploadProvider, sigCh, cancel, bson.M{})
 		os.Exit(exitCode)
 	} else {
 		var wg sync.WaitGroup
@@ -136,6 +138,7 @@ func main() {
 				for {
 					select {
 					case <-sigCh:
+						cancel()
 						return
 					case <-ctx.Done():
 						return
@@ -172,6 +175,8 @@ func doErrorReload(config internal.Config, tracker *internal.DBCollectionFileTra
 		startOID, err := bson.ObjectIDFromHex(erroringFile.StartMongoId)
 		status := erroringFile.Status
 		message := erroringFile.Message
+		collection := internal.MongoCollection{DB: erroringFile.DB, Name: erroringFile.Collection}
+
 		var failed = false
 		if err != nil {
 			internal.Log.Error("error parsing startOID", "error", err.Error())
@@ -196,9 +201,11 @@ func doErrorReload(config internal.Config, tracker *internal.DBCollectionFileTra
 				},
 			}
 
-			doFullLoad(config, tracker, ctx, mongoClient, uploadProvider, sigCh, cancel, filter)
-			status = "deprecated"
-			message = fmt.Sprintf("data was reloaded into a new files; %s", message)
+			errCode := doFullLoad(config, tracker, ctx, []internal.MongoCollection{collection}, mongoClient, uploadProvider, sigCh, cancel, filter)
+			if errCode == 0 {
+				status = "deprecated"
+				message = fmt.Sprintf("data was reloaded into a new files; %s", message)
+			}
 		}
 		erroringFile.Status = status
 		erroringFile.Message = message
@@ -210,10 +217,17 @@ func doErrorReload(config internal.Config, tracker *internal.DBCollectionFileTra
 	}
 }
 
-func doFullLoad(config internal.Config, tracker *internal.DBCollectionFileTracker, ctx context.Context, mongoClient *mongo.Client, uploadProvider internal.UploadProvider, sigCh chan os.Signal,
+func doFullLoad(config internal.Config,
+	tracker *internal.DBCollectionFileTracker,
+	ctx context.Context,
+	collections []internal.MongoCollection,
+	mongoClient *mongo.Client,
+	uploadProvider internal.UploadProvider, sigCh chan os.Signal,
 	cancel context.CancelFunc, filter bson.M) int {
 
 	meter := otel.Meter("mongo2s3.fullload")
+
+	var hasErrors atomic.Bool
 
 	writeBytesCounter, err := meter.Int64Counter(
 		"mongo2s3.cdc.write_bytes",
@@ -227,7 +241,7 @@ func doFullLoad(config internal.Config, tracker *internal.DBCollectionFileTracke
 	var wg sync.WaitGroup
 	var errWg sync.WaitGroup
 	errorCh := make(chan error, 100)
-	for _, _coll := range config.Collections {
+	for _, _coll := range collections {
 		coll := _coll
 		uploaderCh := make(chan string, 100)
 		specificErrorCh := make(chan error, 100)
@@ -287,6 +301,7 @@ func doFullLoad(config internal.Config, tracker *internal.DBCollectionFileTracke
 				if !ok {
 					return
 				}
+				hasErrors.Store(true)
 				internal.Log.Error("app error", "error", appErr)
 			}
 		}
@@ -317,6 +332,10 @@ outer:
 	close(errorCh)
 	finalErrWg.Wait()
 	internal.Log.Info("Bye")
+
+	if hasErrors.Load() || ctx.Err() != nil {
+		return 1
+	}
 	return 0
 }
 
@@ -337,10 +356,6 @@ func doCDC(config internal.Config, tracker *internal.DBCollectionFileTracker, ct
 		"mongo2s3.cdc.write_bytes",
 		metric.WithDescription("Bytes writen to file"),
 	)
-	if err != nil {
-		internal.Log.Error("error getting items counter", "error", err.Error())
-		return
-	}
 	if err != nil {
 		internal.Log.Error("error getting items counter", "error", err.Error())
 		return
@@ -367,23 +382,71 @@ func doCDC(config internal.Config, tracker *internal.DBCollectionFileTracker, ct
 				os.Exit(9)
 			}
 		}
+		var collectionWg sync.WaitGroup
+		collectionWg.Add(2)
 
 		wg.Go(func() {
-			internal.Log.Info("Starting sync", "db", coll.DB, "collection", coll.Name, "resumeToken", base64.URLEncoding.EncodeToString(resumeToken))
-			if syncErr := internal.SyncEvents(ctx, eventsCounter, writeBytesCounter, config, mongoClient, resumeToken, coll, uploaderCh, specificErrorCh); syncErr != nil {
-				specificErrorCh <- syncErr
+			defer close(uploaderCh)
+			defer collectionWg.Done()
+
+			for ctx.Err() == nil {
+				internal.Log.Info("Starting sync", "db", coll.DB, "collection", coll.Name, "resumeToken", base64.URLEncoding.EncodeToString(resumeToken))
+				syncErr := internal.SyncEvents(ctx, eventsCounter, writeBytesCounter, config, mongoClient, resumeToken, coll, uploaderCh, specificErrorCh)
+				if ctx.Err() != nil {
+					return
+				}
+
+				if syncErr != nil {
+					internal.Log.Error("CDC stopped",
+						"db", coll.DB,
+						"collection", coll.Name,
+						"error", syncErr,
+					)
+				} else {
+					internal.Log.Info("CDC stream closed",
+						"db", coll.DB,
+						"collection", coll.Name,
+					)
+				}
+
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(5 * time.Second):
+				}
+				// refresh checkpoint
+				lastTracking, found, err := tracker.GetLastUpload(ctx, coll.DB, coll.Name)
+				if err != nil {
+					internal.Log.Error("Failed to get resume token", "error", err)
+					continue
+				}
+				if found {
+					token, err := base64.URLEncoding.DecodeString(lastTracking.ResumeTokenB64)
+					if err != nil {
+						internal.Log.Error("Invalid resume token", "error", err)
+						continue
+					}
+					resumeToken = token
+				}
 			}
+
 			internal.Log.Info("Stopped sync", "db", coll.DB, "collection", coll.Name)
-			close(uploaderCh)
 		})
 
 		wg.Go(func() {
+			defer collectionWg.Done()
 			internal.Log.Info("Starting uploads", "db", coll.DB, "collection", coll.Name)
 			uploadError := internal.ProcessUploadingFilesFromChannel(ctx, uploadProvider, tracker, uploaderCh, specificErrorCh)
 			if uploadError != nil {
 				specificErrorCh <- uploadError
 			}
 			internal.Log.Info("Stopped uploads", "db", coll.DB, "collection", coll.Name)
+			// errors at this level should cancel
+			cancel()
+		})
+
+		wg.Go(func() {
+			collectionWg.Wait()
 			close(specificErrorCh)
 		})
 
@@ -414,15 +477,15 @@ func doCDC(config internal.Config, tracker *internal.DBCollectionFileTracker, ct
 		}
 	})
 
-	for {
-		select {
-		case <-sigCh:
-			internal.Log.Info("Shutting down...")
-			cancel()
-		case <-ctx.Done():
-			wg.Wait()
-			errWg.Wait()
-			finalErrWg.Wait()
-		}
+	select {
+	case <-sigCh:
+		internal.Log.Info("Shutting down...")
+		cancel()
+	case <-ctx.Done():
 	}
+
+	wg.Wait()
+	errWg.Wait()
+	close(errorCh)
+	finalErrWg.Wait()
 }

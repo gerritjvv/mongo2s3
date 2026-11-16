@@ -5,6 +5,7 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -79,7 +80,10 @@ func (t *DBCollectionFileTracker) GetErroringFiles(context context.Context) ([]C
     end_mongo_id,
     start_token_b64,
     resume_token_b64
-	from sync_file_tracking where status = 'error' order by created_at desc
+	from sync_file_tracking 
+	where status = 'error' 
+	  AND created_at >= NOW() - INTERVAL '1 day'                        
+	order by created_at desc
 	limit 500
 `)
 	if err != nil {
@@ -94,7 +98,9 @@ func (t *DBCollectionFileTracker) GetErroringFiles(context context.Context) ([]C
 		err = rows.Scan(&record.DB, &record.Collection, &record.RemoteFile, &record.Status, &record.Message,
 			&record.StartMongoId, &record.EndMongoId,
 			&record.StartTokenB64, &record.ResumeTokenB64)
-
+		if err != nil {
+			return nil, err
+		}
 		records = append(records, record)
 	}
 	return records, nil
@@ -150,7 +156,12 @@ func (t *DBCollectionFileTracker) GetLastUpload(context context.Context, db stri
     end_mongo_id,
     start_token_b64,
     resume_token_b64
-	from sync_file_tracking  where db = $1  and collection = $2
+	from sync_file_tracking  
+	where db = $1  
+	  and collection = $2 
+	  and resume_token_b64 IS NOT NULL 
+	  and resume_token_b64 <> ''
+	  and status = 'success'
 	order by created_at desc limit 1
 `, db, collection)
 
